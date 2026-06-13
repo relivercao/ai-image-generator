@@ -4,7 +4,7 @@ import { DEFAULT_RESPONSES_MODEL, getActiveApiProfile, normalizeSettings } from 
 import { formatExportFileTime } from './lib/downloadImages'
 import { DEFAULT_PPT_PARAMS, buildPptOutlineDraft, buildPptPromptPlan, clampSlideCount, type PptSlidePlan } from './lib/pptPromptPlan'
 import { downloadImageSlidesAsPptx } from './lib/pptxExport'
-import { downloadGordenSuperPptSkillResult, runGordenSuperPptSkillFlow, type GordenSkillSourceSlide } from './lib/gordenSuperPptSkillFlow'
+import { downloadGordenSuperPptSkillResult, runGordenSuperPptSkillFlow, type GordenSkillSourceSlide, type GordenSuperPptSkillResult } from './lib/gordenSuperPptSkillFlow'
 import { normalizeParamsForSettings } from './lib/paramCompatibility'
 import { DEFAULT_PPT_CONCURRENCY, clampPptConcurrency, runWithConcurrency } from './lib/pptConcurrency'
 import { buildPptGenerationApiSettings, PPT_RECOMMENDED_RESPONSES_SIZE, PPT_RECOMMENDED_TIMEOUT_SECONDS, type PptGenerationMode } from './lib/pptApiSettings'
@@ -33,6 +33,17 @@ interface PptAppProps {
 }
 
 type PptExportMode = 'image' | 'gorden' | null
+
+interface GordenDownloadLinks {
+  imageDeckFileName: string
+  imageDeckUrl: string
+  editableFileName: string
+  editableUrl: string
+  artifactZipFileName: string
+  artifactZipUrl: string
+  createdAt: number
+  slideCount: number
+}
 
 interface NormalizedSlideImage {
   image: string
@@ -116,6 +127,26 @@ function getSlideStatusText(slide: GeneratedSlide, now: number) {
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function revokeGordenDownloadLinks(links: GordenDownloadLinks | null) {
+  if (!links) return
+  URL.revokeObjectURL(links.imageDeckUrl)
+  URL.revokeObjectURL(links.editableUrl)
+  URL.revokeObjectURL(links.artifactZipUrl)
+}
+
+function createGordenDownloadLinks(result: GordenSuperPptSkillResult): GordenDownloadLinks {
+  return {
+    imageDeckFileName: result.imageDeckFileName,
+    imageDeckUrl: URL.createObjectURL(result.imageDeckBlob),
+    editableFileName: result.editableFileName,
+    editableUrl: URL.createObjectURL(result.editableBlob),
+    artifactZipFileName: result.artifactZipFileName,
+    artifactZipUrl: URL.createObjectURL(result.artifactZipBlob),
+    createdAt: Date.now(),
+    slideCount: result.editableSlides.length,
+  }
 }
 
 function isDarkStylePreset(style: string) {
@@ -257,6 +288,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const [running, setRunning] = useState(false)
   const [exportMode, setExportMode] = useState<PptExportMode>(null)
   const [exportStartedAt, setExportStartedAt] = useState<number | null>(null)
+  const [gordenDownloads, setGordenDownloads] = useState<GordenDownloadLinks | null>(null)
   const [outlineGenerating, setOutlineGenerating] = useState(false)
   const [message, setMessage] = useState('')
   const [now, setNow] = useState(() => Date.now())
@@ -264,6 +296,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const slideControllersRef = useRef<Map<number, AbortController>>(new Map())
   const outlineControllerRef = useRef<AbortController | null>(null)
   const skillExportControllerRef = useRef<AbortController | null>(null)
+  const gordenDownloadsRef = useRef<GordenDownloadLinks | null>(null)
 
   const exporting = exportMode !== null
   const completedSlides = slides.filter((slide) => slide.status === 'done' && Boolean(slide.image))
@@ -287,6 +320,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     return () => {
       outlineControllerRef.current?.abort(new Error('PPT 页面已卸载'))
       skillExportControllerRef.current?.abort(new Error('PPT 页面已卸载'))
+      revokeGordenDownloadLinks(gordenDownloadsRef.current)
     }
   }, [])
 
@@ -310,6 +344,12 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const stopSkillExport = () => {
     skillExportControllerRef.current?.abort(new Error('Gorden 转换已停止'))
     setMessage('正在停止 Gorden 转换...')
+  }
+
+  const replaceGordenDownloads = (next: GordenDownloadLinks | null) => {
+    revokeGordenDownloadLinks(gordenDownloadsRef.current)
+    gordenDownloadsRef.current = next
+    setGordenDownloads(next)
   }
 
   const generateOutlineDraft = async () => {
@@ -557,6 +597,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   }
 
   const generate = async () => {
+    replaceGordenDownloads(null)
     abortActiveSlideRequests('新一轮生成已开始')
     const nextRunId = runIdRef.current + 1
     runIdRef.current = nextRunId
@@ -668,6 +709,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
   const exportPptx = async () => {
     if (!canExport) return
+    replaceGordenDownloads(null)
     const controller = new AbortController()
     const startedAt = Date.now()
     const exportTimeoutSeconds = Math.max(1, Math.min(pptProfile.timeout || PPT_RECOMMENDED_TIMEOUT_SECONDS, GORDEN_EXPORT_TIMEOUT_SECONDS))
@@ -703,8 +745,9 @@ export default function PptApp({ embedded = false }: PptAppProps) {
           setMessage(`Gorden Super PPT Skills：${progress.message}\n已运行 ${elapsed}；整套转换超时 ${exportTimeoutSeconds}s。`)
         },
       })
+      replaceGordenDownloads(createGordenDownloadLinks(result))
       downloadGordenSuperPptSkillResult(result)
-      setMessage(`已下载 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包`)
+      setMessage(`已生成 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包。若浏览器未自动下载，请使用下方链接。`)
     } catch (err) {
       setMessage(getErrorMessage(err))
     } finally {
@@ -910,6 +953,37 @@ export default function PptApp({ embedded = false }: PptAppProps) {
             {exportMode === 'gorden' && exportStartedAt && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                 Gorden 转换已运行 {formatElapsed(now - exportStartedAt)}；超过 {GORDEN_EXPORT_TIMEOUT_SECONDS}s 会自动停止并恢复按钮。
+              </div>
+            )}
+
+            {gordenDownloads && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
+                <div className="mb-2 font-semibold">Gorden 导出已就绪 · {gordenDownloads.slideCount} 页</div>
+                <div className="grid gap-2">
+                  <a
+                    href={gordenDownloads.editableUrl}
+                    download={gordenDownloads.editableFileName}
+                    className="rounded-md bg-emerald-600 px-3 py-2 text-center text-sm font-semibold text-white transition hover:bg-emerald-500"
+                  >
+                    下载可编辑 PPTX
+                  </a>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={gordenDownloads.imageDeckUrl}
+                      download={gordenDownloads.imageDeckFileName}
+                      className="rounded-md border border-emerald-200 bg-white/80 px-3 py-2 text-center text-xs font-semibold text-emerald-800 transition hover:bg-white dark:border-emerald-300/20 dark:bg-white/10 dark:text-emerald-100 dark:hover:bg-white/15"
+                    >
+                      图片 PPTX
+                    </a>
+                    <a
+                      href={gordenDownloads.artifactZipUrl}
+                      download={gordenDownloads.artifactZipFileName}
+                      className="rounded-md border border-emerald-200 bg-white/80 px-3 py-2 text-center text-xs font-semibold text-emerald-800 transition hover:bg-white dark:border-emerald-300/20 dark:bg-white/10 dark:text-emerald-100 dark:hover:bg-white/15"
+                    >
+                      Skill 产物包
+                    </a>
+                  </div>
+                </div>
               </div>
             )}
 
