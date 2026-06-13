@@ -3,7 +3,8 @@ import { callImageApi } from './lib/api'
 import { DEFAULT_RESPONSES_MODEL, getActiveApiProfile, normalizeSettings } from './lib/apiProfiles'
 import { formatExportFileTime } from './lib/downloadImages'
 import { DEFAULT_PPT_PARAMS, buildPptOutlineDraft, buildPptPromptPlan, clampSlideCount, type PptSlidePlan } from './lib/pptPromptPlan'
-import { downloadEditableSlidesAsPptx, toEditableSlidesFromPlans } from './lib/pptxExport'
+import { downloadImageSlidesAsPptx } from './lib/pptxExport'
+import { downloadGordenSuperPptSkillResult, runGordenSuperPptSkillFlow, type GordenSkillSourceSlide } from './lib/gordenSuperPptSkillFlow'
 import { normalizeParamsForSettings } from './lib/paramCompatibility'
 import { DEFAULT_PPT_CONCURRENCY, clampPptConcurrency, runWithConcurrency } from './lib/pptConcurrency'
 import { buildPptGenerationApiSettings, PPT_RECOMMENDED_RESPONSES_SIZE, PPT_RECOMMENDED_TIMEOUT_SECONDS, type PptGenerationMode } from './lib/pptApiSettings'
@@ -258,8 +259,10 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const runIdRef = useRef(0)
   const slideControllersRef = useRef<Map<number, AbortController>>(new Map())
   const outlineControllerRef = useRef<AbortController | null>(null)
+  const skillExportControllerRef = useRef<AbortController | null>(null)
 
-  const canExport = Boolean(topic.trim() || content.trim()) && !running && !outlineGenerating
+  const completedSlides = slides.filter((slide) => slide.status === 'done' && Boolean(slide.image))
+  const canExport = completedSlides.length > 0 && !running && !outlineGenerating
   const failedSlides = slides.filter((slide) => slide.status === 'error')
   const canRetryFailed = failedSlides.length > 0 && !running
   const apiModeLabel = pptProfile.apiMode === 'responses' ? 'Responses image_generation' : 'Images API'
@@ -278,6 +281,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   useEffect(() => {
     return () => {
       outlineControllerRef.current?.abort(new Error('PPT 页面已卸载'))
+      skillExportControllerRef.current?.abort(new Error('PPT 页面已卸载'))
     }
   }, [])
 
@@ -603,30 +607,82 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     }
   }
 
-  const exportPptx = async () => {
+  const getCompletedSkillSlides = (): GordenSkillSourceSlide[] => slides
+    .filter((slide) => slide.status === 'done' && Boolean(slide.image))
+    .map((slide) => ({
+      plan: slide.plan,
+      image: slide.image!,
+      sourceImageUrl: slide.sourceImageUrl,
+    }))
+
+  const downloadImageDeck = async () => {
     if (!canExport) return
     setExporting(true)
     setMessage('')
     try {
       const time = formatExportFileTime(new Date())
-      const fileName = `${topic.trim() || 'ppt'}-${time}.pptx`
-      const exportPlan = buildPptPromptPlan({
-        topic,
-        content,
-        audience,
-        style,
-        language,
-        slideCount: clampSlideCount(slideCount),
-      })
-      await downloadEditableSlidesAsPptx(
-        toEditableSlidesFromPlans(exportPlan),
+      const sourceSlides = getCompletedSkillSlides()
+      const normalizedImages = await Promise.all(sourceSlides.map((slide) =>
+        normalizeSlideImageForDisplay(slide.image, pptProfile, 'image/png'),
+      ))
+      if (normalizedImages.some((item) => !isDataUrl(item.image))) {
+        throw new Error('图片型 PPTX 需要可下载的本地图片数据，请开启 API 代理或返回 Base64 图片数据后重试')
+      }
+      const fileName = `${topic.trim() || 'ppt'}-${time}-image-deck.pptx`
+      await downloadImageSlidesAsPptx(
+        normalizedImages.map((item, index) => ({
+          dataUrl: item.image,
+          altText: sourceSlides[index]?.plan.title,
+          notes: sourceSlides[index]?.plan.content,
+        })),
         fileName,
         topic,
       )
-      setMessage(`已下载 ${exportPlan.length} 页可编辑 PPTX`)
+      setMessage(`已下载 ${sourceSlides.length} 页图片型 PPTX`)
     } catch (err) {
       setMessage(getErrorMessage(err))
     } finally {
+      setExporting(false)
+    }
+  }
+
+  const exportPptx = async () => {
+    if (!canExport) return
+    const controller = new AbortController()
+    skillExportControllerRef.current?.abort(new Error('新的 Skill 导出已开始'))
+    skillExportControllerRef.current = controller
+    setExporting(true)
+    setMessage('Gorden Super PPT Skills：开始 A→B 四层可编辑转换')
+    try {
+      const time = formatExportFileTime(new Date())
+      const sourceSlides = getCompletedSkillSlides()
+      const normalizedImages = await Promise.all(sourceSlides.map((slide) =>
+        normalizeSlideImageForDisplay(slide.image, pptProfile, 'image/png', controller.signal),
+      ))
+      if (normalizedImages.some((item) => !isDataUrl(item.image))) {
+        throw new Error('Gorden 可编辑 PPTX 需要可下载的本地图片数据，请开启 API 代理或返回 Base64 图片数据后重试')
+      }
+      const result = await runGordenSuperPptSkillFlow({
+        topic,
+        baseName: `${topic.trim() || 'ppt'}-${time}`,
+        slides: sourceSlides.map((slide, index) => ({
+          ...slide,
+          image: normalizedImages[index]?.image || slide.image,
+        })),
+        settings: pptApi.settings,
+        profile: pptProfile,
+        concurrency,
+        signal: controller.signal,
+        onProgress: (progress) => setMessage(`Gorden Super PPT Skills：${progress.message}`),
+      })
+      downloadGordenSuperPptSkillResult(result)
+      setMessage(`已下载 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包`)
+    } catch (err) {
+      if (!controller.signal.aborted) setMessage(getErrorMessage(err))
+    } finally {
+      if (skillExportControllerRef.current === controller) {
+        skillExportControllerRef.current = null
+      }
       setExporting(false)
     }
   }
@@ -797,11 +853,19 @@ export default function PptApp({ embedded = false }: PptAppProps) {
               )}
               <button
                 type="button"
-                onClick={() => { void exportPptx() }}
+                onClick={() => { void downloadImageDeck() }}
                 disabled={!canExport || exporting}
                 className="min-w-[120px] flex-1 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.06] dark:text-gray-100 dark:hover:bg-white/[0.1]"
               >
-                {exporting ? '下载中' : '下载可编辑 PPTX'}
+                {exporting ? '下载中' : '下载图片 PPTX'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { void exportPptx() }}
+                disabled={!canExport || exporting}
+                className="min-w-[120px] flex-1 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-semibold text-blue-700 shadow-sm transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200 dark:hover:bg-blue-400/15"
+              >
+                {exporting ? '转换中' : 'Gorden 可编辑 PPTX'}
               </button>
             </div>
 

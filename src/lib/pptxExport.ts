@@ -21,6 +21,42 @@ export interface EditableSlide {
   notes?: string
 }
 
+export interface GordenSkillTextBox {
+  text: string
+  x: number
+  y: number
+  w: number
+  h: number
+  size?: number
+  sizeRatio?: number
+  color?: string
+  bold?: boolean
+  align?: 'left' | 'center' | 'right' | 'justify'
+  valign?: 'top' | 'middle' | 'bottom'
+  font?: string
+}
+
+export interface GordenSkillIconLayer {
+  dataUrl: string
+  x: number
+  y: number
+  w: number
+  h: number
+  role?: string
+}
+
+export interface GordenSkillLayerSlide {
+  index: number
+  title: string
+  sourceImage: string
+  backgroundImage: string
+  frameImage?: string
+  iconsImage?: string
+  icons?: GordenSkillIconLayer[]
+  texts: GordenSkillTextBox[]
+  notes?: string
+}
+
 export function toEditableSlidesFromPlans(plans: Array<Pick<PptSlidePlan, 'index' | 'title' | 'content'>>): EditableSlide[] {
   return plans.map((plan) => ({
     index: plan.index,
@@ -440,6 +476,125 @@ export function createImageSlidesPptx(slides: ImageSlide[], title = 'Image Deck'
   }
 
   return pptx
+}
+
+function clampFraction(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(0, Math.min(1, value))
+}
+
+function normalizeHexColor(value: string | undefined, fallback = EDITABLE_TEXT): string {
+  const raw = (value || '').trim().replace(/^#/, '')
+  if (/^[0-9a-f]{3}$/i.test(raw)) return raw.split('').map((ch) => `${ch}${ch}`).join('').toUpperCase()
+  if (/^[0-9a-f]{6}$/i.test(raw)) return raw.toUpperCase()
+  return fallback
+}
+
+function getSkillTextSize(text: GordenSkillTextBox): number {
+  if (Number.isFinite(text.size) && text.size) {
+    return Math.max(6, Math.min(72, Number(text.size)))
+  }
+  if (Number.isFinite(text.sizeRatio) && text.sizeRatio) {
+    return Math.max(6, Math.min(72, Number(text.sizeRatio) * EDITABLE_PPTX_H * 72))
+  }
+  return 14
+}
+
+export function createGordenSkillEditablePptx(slides: GordenSkillLayerSlide[], title = 'Gorden Super PPT') {
+  const pptx = new PptxGenJS()
+  pptx.author = 'Gorden Super PPT Skills'
+  pptx.company = 'gpt_image_playground'
+  pptx.subject = title
+  pptx.title = title
+  pptx.defineLayout({
+    name: PPTX_WIDE_LAYOUT.name,
+    width: PPTX_WIDE_LAYOUT.width,
+    height: PPTX_WIDE_LAYOUT.height,
+  })
+  pptx.layout = PPTX_WIDE_LAYOUT.name
+  pptx.theme = {
+    headFontFace: 'Aptos',
+    bodyFontFace: 'Aptos',
+    lang: 'zh-CN',
+  } as never
+
+  for (const item of slides) {
+    const slide = pptx.addSlide()
+    slide.background = { color: 'FFFFFF' }
+    slide.addImage({
+      data: toPptxImageData(item.backgroundImage),
+      x: 0,
+      y: 0,
+      w: PPTX_WIDE_LAYOUT.width,
+      h: PPTX_WIDE_LAYOUT.height,
+      altText: `Slide ${item.index} background`,
+    })
+    if (item.frameImage) {
+      slide.addImage({
+        data: toPptxImageData(item.frameImage),
+        x: 0,
+        y: 0,
+        w: PPTX_WIDE_LAYOUT.width,
+        h: PPTX_WIDE_LAYOUT.height,
+        altText: `Slide ${item.index} frame layer`,
+      })
+    }
+    if (item.icons?.length) {
+      for (const icon of item.icons) {
+        slide.addImage({
+          data: toPptxImageData(icon.dataUrl),
+          x: clampFraction(icon.x, 0) * PPTX_WIDE_LAYOUT.width,
+          y: clampFraction(icon.y, 0) * PPTX_WIDE_LAYOUT.height,
+          w: Math.max(0.01, clampFraction(icon.w, 0.05) * PPTX_WIDE_LAYOUT.width),
+          h: Math.max(0.01, clampFraction(icon.h, 0.05) * PPTX_WIDE_LAYOUT.height),
+          altText: icon.role || `Slide ${item.index} icon layer`,
+        })
+      }
+    } else if (item.iconsImage) {
+      slide.addImage({
+        data: toPptxImageData(item.iconsImage),
+        x: 0,
+        y: 0,
+        w: PPTX_WIDE_LAYOUT.width,
+        h: PPTX_WIDE_LAYOUT.height,
+        altText: `Slide ${item.index} icon layer`,
+      })
+    }
+
+    for (const text of item.texts) {
+      const x = clampFraction(text.x, 0.05) * PPTX_WIDE_LAYOUT.width
+      const y = clampFraction(text.y, 0.05) * PPTX_WIDE_LAYOUT.height
+      const w = Math.max(0.1, clampFraction(text.w, 0.3) * PPTX_WIDE_LAYOUT.width)
+      const h = Math.max(0.1, clampFraction(text.h, 0.08) * PPTX_WIDE_LAYOUT.height)
+      slide.addText(text.text, {
+        x,
+        y,
+        w,
+        h,
+        fontFace: text.font || 'Microsoft YaHei',
+        fontSize: getSkillTextSize(text),
+        bold: Boolean(text.bold),
+        color: normalizeHexColor(text.color),
+        align: text.align || 'left',
+        valign: text.valign || 'top',
+        margin: 0,
+        breakLine: false,
+        fit: 'shrink',
+      } as never)
+    }
+
+    if (item.notes?.trim()) slide.addNotes(item.notes.trim())
+  }
+
+  return pptx
+}
+
+export async function downloadGordenSkillEditablePptx(slides: GordenSkillLayerSlide[], fileName: string, title?: string): Promise<string> {
+  if (slides.length === 0) throw new Error('No Gorden Super PPT Skill slides to export')
+  const pptx = createGordenSkillEditablePptx(slides, title || sanitizePptxFileName(fileName) || 'Gorden Super PPT')
+  const safeFileName = ensurePptxExtension(fileName)
+  await pptx.writeFile({ fileName: safeFileName, compression: true })
+  return safeFileName
 }
 
 export async function downloadImageSlidesAsPptx(slides: ImageSlide[], fileName: string, title?: string): Promise<string> {
