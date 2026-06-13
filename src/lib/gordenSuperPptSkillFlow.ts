@@ -80,6 +80,7 @@ const KEY_GREEN = '#00ff00'
 const KEY_MAGENTA = '#ff00ff'
 const LAYER_ATTEMPTS = 3
 const GORDEN_CONVERSION_MAX_CONCURRENCY = 2
+const GORDEN_LAYER_TIMEOUT_CAP_SECONDS = 180
 const ICON_ALPHA_THRESHOLD = 24
 const ICON_MIN_AREA = 80
 const ICON_PADDING_PX = 8
@@ -139,6 +140,10 @@ function assertNotAborted(signal?: AbortSignal) {
 
 function getRequestTimeoutSeconds(settings: AppSettings, profile: ApiProfile): number {
   return Math.max(1, profile.timeout || settings.timeout || 600)
+}
+
+function getLayerAttemptTimeoutSeconds(settings: AppSettings, profile: ApiProfile): number {
+  return Math.min(getRequestTimeoutSeconds(settings, profile), GORDEN_LAYER_TIMEOUT_CAP_SECONDS)
 }
 
 function getAbortError(signal: AbortSignal, fallback: string): Error {
@@ -717,6 +722,21 @@ function buildFallbackTextBoxes(plan: PptSlidePlan): GordenSkillTextBox[] {
   ]
 }
 
+function createSolidLayerDataUrl(width: number, height: number, color: string): string {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas is unavailable')
+  ctx.fillStyle = color
+  ctx.fillRect(0, 0, width, height)
+  return canvas.toDataURL('image/png')
+}
+
+function toLayerSource(dataUrl: string, fallbackReason?: string): string {
+  return `${fallbackReason ? 'fallback' : 'browser-imagegen'}:${hashString(dataUrl)}`
+}
+
 async function convertSlide(opts: {
   item: PreparedSlide
   settings: AppSettings
@@ -731,32 +751,59 @@ async function convertSlide(opts: {
   const framePrompt = buildLayerPrompt('frame', item.plan, item.keyColor)
   const iconsPrompt = buildLayerPrompt('icons', item.plan, item.keyColor)
   const textPrompt = buildTextPrompt(item.plan)
-  const timeoutSeconds = getRequestTimeoutSeconds(settings, profile)
+  const timeoutSeconds = getLayerAttemptTimeoutSeconds(settings, profile)
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'background', message: `B2 ${slideNo}: generating clean background` })
-  const backgroundRaw = await withRetries('background layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
-    settings,
-    prompt: backgroundPrompt,
-    sourceImage: item.sourceImage,
-    signal: attemptSignal,
-  }))
+  let backgroundFallbackReason: string | undefined
+  let backgroundRaw: string
+  try {
+    backgroundRaw = await withRetries('background layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
+      settings,
+      prompt: backgroundPrompt,
+      sourceImage: item.sourceImage,
+      signal: attemptSignal,
+    }))
+  } catch (err) {
+    assertNotAborted(signal)
+    backgroundFallbackReason = getErrorMessage(err)
+    onProgress?.({ slideIndex: item.plan.index, stage: 'background', message: `B2 ${slideNo}: using source image fallback background` })
+    backgroundRaw = item.sourceImage
+  }
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: generating framework layer` })
-  const frameRaw = await withRetries('frame layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
-    settings,
-    prompt: framePrompt,
-    sourceImage: item.sourceImage,
-    signal: attemptSignal,
-  }))
+  let frameFallbackReason: string | undefined
+  let frameRaw: string
+  try {
+    frameRaw = await withRetries('frame layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
+      settings,
+      prompt: framePrompt,
+      sourceImage: item.sourceImage,
+      signal: attemptSignal,
+    }))
+  } catch (err) {
+    assertNotAborted(signal)
+    frameFallbackReason = getErrorMessage(err)
+    onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: using empty framework fallback` })
+    frameRaw = createSolidLayerDataUrl(item.width, item.height, item.keyColor)
+  }
   const frameImage = await chromaKeyDataUrl(frameRaw, item.keyColor)
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: generating icon/decor layer` })
-  const iconsRaw = await withRetries('icon layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
-    settings,
-    prompt: iconsPrompt,
-    sourceImage: item.sourceImage,
-    signal: attemptSignal,
-  }))
+  let iconsFallbackReason: string | undefined
+  let iconsRaw: string
+  try {
+    iconsRaw = await withRetries('icon layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
+      settings,
+      prompt: iconsPrompt,
+      sourceImage: item.sourceImage,
+      signal: attemptSignal,
+    }))
+  } catch (err) {
+    assertNotAborted(signal)
+    iconsFallbackReason = getErrorMessage(err)
+    onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: using empty icon fallback` })
+    iconsRaw = createSolidLayerDataUrl(item.width, item.height, item.keyColor)
+  }
   const iconsImage = await chromaKeyDataUrl(iconsRaw, item.keyColor)
   const icons = await sliceTransparentLayer(iconsImage)
 
@@ -798,7 +845,18 @@ async function convertSlide(opts: {
         }))
       : [{ file: 'icons.png', x: 0, y: 0, w: 1, h: 1, role: 'icons_layer' }],
     texts: texts.map(toLayoutText),
-    ...(textFallbackReason ? { text_fallback_reason: textFallbackReason } : {}),
+    ...(
+      backgroundFallbackReason || frameFallbackReason || iconsFallbackReason || textFallbackReason
+        ? {
+            fallback_reasons: {
+              ...(backgroundFallbackReason ? { background: backgroundFallbackReason } : {}),
+              ...(frameFallbackReason ? { frame: frameFallbackReason } : {}),
+              ...(iconsFallbackReason ? { icons: iconsFallbackReason } : {}),
+              ...(textFallbackReason ? { text: textFallbackReason } : {}),
+            },
+          }
+        : {}
+    ),
   }
   const assetManifest = {
     schema: 'gorden-image2pptx-assets/v1',
@@ -810,22 +868,25 @@ async function convertSlide(opts: {
         layer: 'background',
         backend,
         prompt_file: `editable/${slideNo}/prompts/background.md`,
-        generated_source: `browser-imagegen:${hashString(backgroundRaw)}`,
+        generated_source: toLayerSource(backgroundRaw, backgroundFallbackReason),
         copied_to: `editable/${slideNo}/background.png`,
+        ...(backgroundFallbackReason ? { fallback_reason: backgroundFallbackReason } : {}),
       },
       {
         layer: 'frame',
         backend,
         prompt_file: `editable/${slideNo}/prompts/frame.md`,
-        generated_source: `browser-imagegen:${hashString(frameRaw)}`,
+        generated_source: toLayerSource(frameRaw, frameFallbackReason),
         copied_to: `editable/${slideNo}/frame.png`,
+        ...(frameFallbackReason ? { fallback_reason: frameFallbackReason } : {}),
       },
       {
         layer: 'icons',
         backend,
         prompt_file: `editable/${slideNo}/prompts/icons.md`,
-        generated_source: `browser-imagegen:${hashString(iconsRaw)}`,
+        generated_source: toLayerSource(iconsRaw, iconsFallbackReason),
         copied_to: `editable/${slideNo}/icons.png`,
+        ...(iconsFallbackReason ? { fallback_reason: iconsFallbackReason } : {}),
       },
     ],
     text_extraction: {

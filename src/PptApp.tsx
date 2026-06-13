@@ -32,6 +32,8 @@ interface PptAppProps {
   embedded?: boolean
 }
 
+type PptExportMode = 'image' | 'gorden' | null
+
 interface NormalizedSlideImage {
   image: string
   sourceImageUrl?: string
@@ -45,6 +47,7 @@ interface SlideGenerationResult extends NormalizedSlideImage {
 const MAX_SLIDE_RETRIES = 3
 const MAX_SLIDE_ATTEMPTS = MAX_SLIDE_RETRIES + 1
 const PPT_PARTIAL_FINALIZE_GRACE_MS = 45_000
+const GORDEN_EXPORT_TIMEOUT_SECONDS = 600
 
 const STYLE_PRESETS = [
   '清晰、专业、信息密度高的科技商务风格',
@@ -252,7 +255,8 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const [concurrency, setConcurrency] = useState(DEFAULT_PPT_CONCURRENCY)
   const [slides, setSlides] = useState<GeneratedSlide[]>([])
   const [running, setRunning] = useState(false)
-  const [exporting, setExporting] = useState(false)
+  const [exportMode, setExportMode] = useState<PptExportMode>(null)
+  const [exportStartedAt, setExportStartedAt] = useState<number | null>(null)
   const [outlineGenerating, setOutlineGenerating] = useState(false)
   const [message, setMessage] = useState('')
   const [now, setNow] = useState(() => Date.now())
@@ -261,6 +265,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
   const outlineControllerRef = useRef<AbortController | null>(null)
   const skillExportControllerRef = useRef<AbortController | null>(null)
 
+  const exporting = exportMode !== null
   const completedSlides = slides.filter((slide) => slide.status === 'done' && Boolean(slide.image))
   const canExport = completedSlides.length > 0 && !running && !outlineGenerating
   const failedSlides = slides.filter((slide) => slide.status === 'error')
@@ -273,10 +278,10 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     : `PPT 实际使用当前配置 / ${pptProfile.model}`
 
   useEffect(() => {
-    if (!running) return
+    if (!running && !exporting) return
     const intervalId = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(intervalId)
-  }, [running])
+  }, [running, exporting])
 
   useEffect(() => {
     return () => {
@@ -290,6 +295,21 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       controller.abort(new Error(reason))
     }
     slideControllersRef.current.clear()
+  }
+
+  const beginExport = (mode: Exclude<PptExportMode, null>) => {
+    setExportMode(mode)
+    setExportStartedAt(Date.now())
+  }
+
+  const finishExport = () => {
+    setExportMode(null)
+    setExportStartedAt(null)
+  }
+
+  const stopSkillExport = () => {
+    skillExportControllerRef.current?.abort(new Error('Gorden 转换已停止'))
+    setMessage('正在停止 Gorden 转换...')
   }
 
   const generateOutlineDraft = async () => {
@@ -617,7 +637,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
   const downloadImageDeck = async () => {
     if (!canExport) return
-    setExporting(true)
+    beginExport('image')
     setMessage('')
     try {
       const time = formatExportFileTime(new Date())
@@ -642,16 +662,21 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     } catch (err) {
       setMessage(getErrorMessage(err))
     } finally {
-      setExporting(false)
+      finishExport()
     }
   }
 
   const exportPptx = async () => {
     if (!canExport) return
     const controller = new AbortController()
+    const startedAt = Date.now()
+    const exportTimeoutSeconds = Math.max(1, Math.min(pptProfile.timeout || PPT_RECOMMENDED_TIMEOUT_SECONDS, GORDEN_EXPORT_TIMEOUT_SECONDS))
+    const timeoutId = window.setTimeout(() => {
+      controller.abort(new Error(`Gorden 转换超过 ${exportTimeoutSeconds}s，已自动停止。请减少页数或稍后重试。`))
+    }, exportTimeoutSeconds * 1000)
     skillExportControllerRef.current?.abort(new Error('新的 Skill 导出已开始'))
     skillExportControllerRef.current = controller
-    setExporting(true)
+    beginExport('gorden')
     setMessage('Gorden Super PPT Skills：开始 A→B 四层可编辑转换')
     try {
       const time = formatExportFileTime(new Date())
@@ -673,17 +698,21 @@ export default function PptApp({ embedded = false }: PptAppProps) {
         profile: pptProfile,
         concurrency,
         signal: controller.signal,
-        onProgress: (progress) => setMessage(`Gorden Super PPT Skills：${progress.message}`),
+        onProgress: (progress) => {
+          const elapsed = formatElapsed(Date.now() - startedAt)
+          setMessage(`Gorden Super PPT Skills：${progress.message}\n已运行 ${elapsed}；整套转换超时 ${exportTimeoutSeconds}s。`)
+        },
       })
       downloadGordenSuperPptSkillResult(result)
       setMessage(`已下载 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包`)
     } catch (err) {
-      if (!controller.signal.aborted) setMessage(getErrorMessage(err))
+      setMessage(getErrorMessage(err))
     } finally {
+      window.clearTimeout(timeoutId)
       if (skillExportControllerRef.current === controller) {
         skillExportControllerRef.current = null
       }
-      setExporting(false)
+      finishExport()
     }
   }
 
@@ -857,7 +886,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
                 disabled={!canExport || exporting}
                 className="min-w-[120px] flex-1 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.06] dark:text-gray-100 dark:hover:bg-white/[0.1]"
               >
-                {exporting ? '下载中' : '下载图片 PPTX'}
+                {exportMode === 'image' ? '下载中' : '下载图片 PPTX'}
               </button>
               <button
                 type="button"
@@ -865,9 +894,24 @@ export default function PptApp({ embedded = false }: PptAppProps) {
                 disabled={!canExport || exporting}
                 className="min-w-[120px] flex-1 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-semibold text-blue-700 shadow-sm transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200 dark:hover:bg-blue-400/15"
               >
-                {exporting ? '转换中' : 'Gorden 可编辑 PPTX'}
+                {exportMode === 'gorden' ? '转换中' : 'Gorden 可编辑 PPTX'}
               </button>
+              {exportMode === 'gorden' && (
+                <button
+                  type="button"
+                  onClick={stopSkillExport}
+                  className="min-w-[120px] flex-1 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-semibold text-red-700 shadow-sm transition hover:bg-red-100 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15"
+                >
+                  停止转换
+                </button>
+              )}
             </div>
+
+            {exportMode === 'gorden' && exportStartedAt && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                Gorden 转换已运行 {formatElapsed(now - exportStartedAt)}；超过 {GORDEN_EXPORT_TIMEOUT_SECONDS}s 会自动停止并恢复按钮。
+              </div>
+            )}
 
             {message && (
               <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-300">
