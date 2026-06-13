@@ -24,6 +24,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
   const isMobile = useIsMobile()
   const modalRef = useRef<HTMLDivElement>(null)
   const isAgentMode = appMode === 'agent'
+  const isPptMode = appMode === 'ppt'
   useCloseOnEscape(true, onClose)
   usePreventBackgroundScroll(true, modalRef)
 
@@ -72,6 +73,19 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
                     <li>输入 <strong className="text-blue-500 dark:text-blue-400 font-medium">@</strong> 可引用参考图或前面轮次生成的图片；Agent 也会自行参考上下文中的图片。</li>
                     <li>编辑某轮消息重新发送，或重新生成某轮消息，会产生可切换的分支。</li>
                     <li>生成的图片会同步到画廊；删除对话默认不会删除画廊中的任务。</li>
+                  </ul>
+                </div>
+              </section>
+            </>
+          ) : isPptMode ? (
+            <>
+              <section>
+                <div className="space-y-4">
+                  <ul className="list-disc pl-4 space-y-2">
+                    <li>可在顶部切换 PPT、画廊和 Agent，PPT 不会改动画廊首页布局。</li>
+                    <li>输入主题和素材后，可一键生成大纲，也可以直接在大纲文本框中手动编辑。</li>
+                    <li>生成幻灯片会按设置的并行页数同时执行，失败页可单独重试。</li>
+                    <li>生成完成后点击“下载 PPTX”即可保存到本地。</li>
                   </ul>
                 </div>
               </section>

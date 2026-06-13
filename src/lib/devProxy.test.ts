@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildApiUrl } from './devProxy'
+import { buildApiUrl, isApiProxyLocked, normalizeDevProxyConfig, shouldUseApiProxy } from './devProxy'
 
 describe('buildApiUrl', () => {
   it('uses the same-origin proxy prefix when API proxy is enabled', () => {
@@ -21,6 +21,7 @@ describe('buildApiUrl', () => {
         'responses',
         {
           enabled: true,
+          locked: false,
           prefix: '/openai-proxy',
           target: 'http://api.example.com/v1',
           changeOrigin: true,
@@ -29,6 +30,27 @@ describe('buildApiUrl', () => {
         true,
       ),
     ).toBe('/openai-proxy/responses')
+  })
+
+  it('normalizes locked proxy config and forces proxy use', () => {
+    const proxyConfig = normalizeDevProxyConfig({
+      enabled: true,
+      locked: true,
+      prefix: 'openai-proxy/',
+      target: 'https://api.openai.com/v1',
+      secure: true,
+    })
+
+    expect(proxyConfig).toMatchObject({
+      enabled: true,
+      locked: true,
+      prefix: '/openai-proxy',
+      target: 'https://api.openai.com/v1',
+      changeOrigin: true,
+      secure: true,
+    })
+    expect(isApiProxyLocked(proxyConfig)).toBe(true)
+    expect(shouldUseApiProxy(false, proxyConfig)).toBe(true)
   })
 
   it('uses the configured API URL directly when API proxy is disabled', () => {

@@ -36,6 +36,111 @@ describe('callImageApi', () => {
     },
   )
 
+  it('parses multiple Responses images packed in one image_generation_call result', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'image_generation_call',
+        result: [
+          { b64_json: 'aW1hZ2UtMQ==' },
+          { image: 'aW1hZ2UtMg==' },
+          { images: [{ base64: 'aW1hZ2UtMw==' }] },
+        ],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtMQ==',
+      'data:image/png;base64,aW1hZ2UtMg==',
+      'data:image/png;base64,aW1hZ2UtMw==',
+    ])
+  })
+
+  it('parses Responses image URLs from message content when raw URLs are allowed', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{
+          type: 'output_text',
+          text: '生成完成：![slide](https://cdn.macode.cloud/generated/slide-1.png)',
+        }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      allowRawImageUrls: true,
+    })
+
+    expect(result.images).toEqual(['https://cdn.macode.cloud/generated/slide-1.png'])
+  })
+
+  it('parses Responses image URLs from top-level data when output is omitted', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_123',
+      status: 'completed',
+      data: [
+        { output_url: 'https://cdn.macode.cloud/generated/slide-1.png' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      allowRawImageUrls: true,
+    })
+
+    expect(result.images).toEqual(['https://cdn.macode.cloud/generated/slide-1.png'])
+  })
+
+  it('parses Responses image URLs from artifacts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{
+          type: 'output_text',
+          text: 'done',
+          artifacts: [
+            { download_url: 'https://macode.cloud/v1/files/slide-1.png' },
+          ],
+        }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      allowRawImageUrls: true,
+    })
+
+    expect(result.images).toEqual(['https://macode.cloud/v1/files/slide-1.png'])
+  })
+
   it('records actual params returned on Images API responses in Codex CLI mode', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output_format: 'png',

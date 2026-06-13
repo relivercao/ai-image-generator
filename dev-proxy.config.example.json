@@ -1,7 +1,8 @@
 {
   "enabled": true,
+  "locked": true,
   "prefix": "/api-proxy",
-  "target": "http://127.0.0.1:3000",
+  "target": "https://api.openai.com/v1",
   "changeOrigin": true,
-  "secure": false
+  "secure": true
 }

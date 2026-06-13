@@ -1205,6 +1205,55 @@ describe('agent draft lifecycle', () => {
     expect(state.inputImages).toEqual([imageB])
   })
 
+  it('keeps the gallery draft when switching through ppt mode', () => {
+    const galleryPrompt = `画廊 ${getSelectedImageMentionLabel(0)} 草稿`
+    useStore.setState({
+      appMode: 'gallery',
+      prompt: galleryPrompt,
+      inputImages: [imageB],
+      maskDraft: null,
+      maskEditorImageId: null,
+      galleryInputDraft: null,
+    })
+
+    useStore.getState().setAppMode('ppt')
+
+    let state = useStore.getState()
+    expect(state.appMode).toBe('ppt')
+    expect(state.prompt).toBe('')
+    expect(state.inputImages).toEqual([])
+    expect(state.galleryInputDraft).toMatchObject({ prompt: galleryPrompt, inputImages: [imageB] })
+
+    useStore.getState().setAppMode('gallery')
+
+    state = useStore.getState()
+    expect(state.appMode).toBe('gallery')
+    expect(state.prompt).toBe(galleryPrompt)
+    expect(state.inputImages).toEqual([imageB])
+  })
+
+  it('keeps the agent draft when switching through ppt mode', () => {
+    useStore.getState().setAppMode('ppt')
+
+    let state = useStore.getState()
+    expect(state.appMode).toBe('ppt')
+    expect(state.prompt).toBe('')
+    expect(state.inputImages).toEqual([])
+    expect(state.agentInputDrafts['conversation-a']).toMatchObject({
+      prompt: draftState.prompt,
+      inputImages: draftState.inputImages,
+      maskDraft: draftState.maskDraft,
+      maskEditorImageId: imageA.id,
+    })
+
+    useStore.getState().setAppMode('agent')
+
+    state = useStore.getState()
+    expect(state.appMode).toBe('agent')
+    expect(state.prompt).toBe(draftState.prompt)
+    expect(state.inputImages).toEqual(draftState.inputImages)
+  })
+
   it('persists the gallery draft while agent mode is active', () => {
     const galleryPrompt = 'gallery draft'
     useStore.setState({

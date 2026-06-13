@@ -16,6 +16,8 @@ export interface CallApiOptions {
   /** 输入图片的 data URL 列表 */
   inputImageDataUrls: string[]
   maskDataUrl?: string
+  signal?: AbortSignal
+  allowRawImageUrls?: boolean
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
@@ -134,13 +136,23 @@ async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'
   }
 }
 
-export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
+export interface FetchImageUrlAsDataUrlOptions {
+  headers?: HeadersInit
+}
+
+export async function fetchImageUrlAsDataUrl(
+  url: string,
+  fallbackMime: string,
+  signal?: AbortSignal,
+  options: FetchImageUrlAsDataUrlOptions = {},
+): Promise<string> {
   if (isDataUrl(url)) return url
 
   let response: Response
   try {
     response = await fetch(url, {
       cache: 'no-store',
+      headers: options.headers,
       signal,
     })
   } catch (err) {
@@ -207,4 +219,29 @@ export function pickActualParams(source: unknown): Partial<TaskParams> {
 export function mergeActualParams(...sources: Array<Partial<TaskParams> | undefined>): Partial<TaskParams> | undefined {
   const merged = Object.assign({}, ...sources.filter((source) => source && Object.keys(source).length))
   return Object.keys(merged).length ? merged : undefined
+}
+
+export function createLinkedAbortController(timeoutSeconds: number, callerSignal?: AbortSignal) {
+  const controller = new AbortController()
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000
+  const timeoutId = setTimeout(() => {
+    controller.abort(new Error('请求超时'))
+  }, timeoutMs)
+  const abortFromCaller = () => {
+    controller.abort(callerSignal?.reason ?? new Error('请求已停止'))
+  }
+
+  if (callerSignal?.aborted) {
+    abortFromCaller()
+  } else {
+    callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
+
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timeoutId)
+      callerSignal?.removeEventListener('abort', abortFromCaller)
+    },
+  }
 }

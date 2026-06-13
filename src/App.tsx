@@ -10,6 +10,7 @@ import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
 import AgentWorkspace from './components/AgentWorkspace'
 import InputBar from './components/InputBar'
+import PptApp from './PptApp'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
 import SettingsModal from './components/SettingsModal'
@@ -76,17 +77,20 @@ export default function App() {
   return (
     <>
       <Header />
+      <div hidden={appMode !== 'ppt'}>
+        <PptApp embedded />
+      </div>
       {appMode === 'agent' ? (
         <AgentWorkspace />
-      ) : (
+      ) : appMode === 'gallery' ? (
         <main data-home-main data-drag-select-surface className="pb-48">
           <div className="safe-area-x max-w-7xl mx-auto">
             <SearchBar />
             {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
           </div>
         </main>
-      )}
-      <InputBar />
+      ) : null}
+      {appMode !== 'ppt' && <InputBar />}
       <DetailModal />
       <Lightbox />
       <SettingsModal />
