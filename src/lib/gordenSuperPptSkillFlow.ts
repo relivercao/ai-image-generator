@@ -79,6 +79,7 @@ const TARGET_HEIGHT = 864
 const KEY_GREEN = '#00ff00'
 const KEY_MAGENTA = '#ff00ff'
 const LAYER_ATTEMPTS = 3
+const GORDEN_CONVERSION_MAX_CONCURRENCY = 2
 const ICON_ALPHA_THRESHOLD = 24
 const ICON_MIN_AREA = 80
 const ICON_PADDING_PX = 8
@@ -136,16 +137,102 @@ function assertNotAborted(signal?: AbortSignal) {
   throw signal.reason instanceof Error ? signal.reason : new Error('Request aborted')
 }
 
-async function withRetries<T>(label: string, signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+function getRequestTimeoutSeconds(settings: AppSettings, profile: ApiProfile): number {
+  return Math.max(1, profile.timeout || settings.timeout || 600)
+}
+
+function getAbortError(signal: AbortSignal, fallback: string): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  if (typeof signal.reason === 'string' && signal.reason.trim()) return new Error(signal.reason)
+  return new Error(fallback)
+}
+
+function createTimedAbortController(label: string, timeoutSeconds: number, callerSignal?: AbortSignal) {
+  const controller = new AbortController()
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new Error(`${label} timed out after ${timeoutSeconds}s`))
+  }, timeoutMs)
+  const abortFromCaller = () => {
+    controller.abort(callerSignal?.reason ?? new Error(`${label} aborted`))
+  }
+
+  if (callerSignal?.aborted) {
+    abortFromCaller()
+  } else {
+    callerSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
+
+  return {
+    controller,
+    cleanup: () => {
+      window.clearTimeout(timeoutId)
+      callerSignal?.removeEventListener('abort', abortFromCaller)
+    },
+  }
+}
+
+async function runAttemptWithTimeout<T>(
+  label: string,
+  timeoutSeconds: number,
+  signal: AbortSignal | undefined,
+  fn: (attemptSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const { controller, cleanup } = createTimedAbortController(label, timeoutSeconds, signal)
+  let onAbort: (() => void) | undefined
+  const abortPromise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(getAbortError(controller.signal, `${label} aborted`))
+    if (controller.signal.aborted) {
+      onAbort()
+      return
+    }
+    controller.signal.addEventListener('abort', onAbort, { once: true })
+  })
+
+  try {
+    return await Promise.race([fn(controller.signal), abortPromise])
+  } finally {
+    if (onAbort) controller.signal.removeEventListener('abort', onAbort)
+    cleanup()
+  }
+}
+
+function waitBeforeRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Request aborted'))
+      return
+    }
+    let timeoutId = 0
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    function onAbort() {
+      window.clearTimeout(timeoutId)
+      cleanup()
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Request aborted'))
+    }
+    timeoutId = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function withRetries<T>(
+  label: string,
+  signal: AbortSignal | undefined,
+  timeoutSeconds: number,
+  fn: (attemptSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
   let lastError: unknown
   for (let attempt = 1; attempt <= LAYER_ATTEMPTS; attempt++) {
     assertNotAborted(signal)
     try {
-      return await fn()
+      return await runAttemptWithTimeout(`${label} attempt ${attempt}`, timeoutSeconds, signal, fn)
     } catch (err) {
       lastError = err
       if (attempt >= LAYER_ATTEMPTS || signal?.aborted) break
-      await new Promise((resolve) => window.setTimeout(resolve, 1000 * attempt))
+      await waitBeforeRetry(1000 * attempt, signal)
     }
   }
   const message = lastError instanceof Error ? lastError.message : String(lastError)
@@ -586,6 +673,50 @@ function toLayoutText(text: GordenSkillTextBox) {
   }
 }
 
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function buildFallbackTextBoxes(plan: PptSlidePlan): GordenSkillTextBox[] {
+  const title = plan.title.trim() || `Slide ${plan.index}`
+  const bodyLines = plan.content
+    .split(/\n+|[;；。]/)
+    .map((line) => line.replace(/^[-•\d.\s]+/, '').trim())
+    .filter(Boolean)
+    .filter((line) => line !== title)
+    .slice(0, 5)
+  const body = bodyLines.length ? bodyLines.map((line) => `• ${line}`).join('\n') : '• Editable content placeholder'
+
+  return [
+    {
+      text: title,
+      x: 0.06,
+      y: 0.06,
+      w: 0.88,
+      h: 0.12,
+      sizeRatio: 0.055,
+      color: '#111827',
+      bold: true,
+      align: 'left',
+      valign: 'top',
+      font: 'Microsoft YaHei',
+    },
+    {
+      text: body,
+      x: 0.08,
+      y: 0.24,
+      w: 0.84,
+      h: 0.5,
+      sizeRatio: 0.032,
+      color: '#1f2937',
+      bold: false,
+      align: 'left',
+      valign: 'top',
+      font: 'Microsoft YaHei',
+    },
+  ]
+}
+
 async function convertSlide(opts: {
   item: PreparedSlide
   settings: AppSettings
@@ -600,42 +731,52 @@ async function convertSlide(opts: {
   const framePrompt = buildLayerPrompt('frame', item.plan, item.keyColor)
   const iconsPrompt = buildLayerPrompt('icons', item.plan, item.keyColor)
   const textPrompt = buildTextPrompt(item.plan)
+  const timeoutSeconds = getRequestTimeoutSeconds(settings, profile)
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'background', message: `B2 ${slideNo}: generating clean background` })
-  const backgroundRaw = await withRetries('background layer', signal, () => generateLayerImage({
+  const backgroundRaw = await withRetries('background layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
     settings,
     prompt: backgroundPrompt,
     sourceImage: item.sourceImage,
-    signal,
+    signal: attemptSignal,
   }))
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: generating framework layer` })
-  const frameRaw = await withRetries('frame layer', signal, () => generateLayerImage({
+  const frameRaw = await withRetries('frame layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
     settings,
     prompt: framePrompt,
     sourceImage: item.sourceImage,
-    signal,
+    signal: attemptSignal,
   }))
   const frameImage = await chromaKeyDataUrl(frameRaw, item.keyColor)
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: generating icon/decor layer` })
-  const iconsRaw = await withRetries('icon layer', signal, () => generateLayerImage({
+  const iconsRaw = await withRetries('icon layer', signal, timeoutSeconds, (attemptSignal) => generateLayerImage({
     settings,
     prompt: iconsPrompt,
     sourceImage: item.sourceImage,
-    signal,
+    signal: attemptSignal,
   }))
   const iconsImage = await chromaKeyDataUrl(iconsRaw, item.keyColor)
   const icons = await sliceTransparentLayer(iconsImage)
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'text', message: `B7 ${slideNo}: extracting editable text boxes` })
-  const texts = await withRetries('text layout', signal, () => callVisionLayoutApi({
-    settings,
-    profile,
-    prompt: textPrompt,
-    sourceImage: item.sourceImage,
-    signal,
-  }))
+  let textFallbackReason: string | undefined
+  let texts: GordenSkillTextBox[]
+  try {
+    texts = await withRetries('text layout', signal, timeoutSeconds, (attemptSignal) => callVisionLayoutApi({
+      settings,
+      profile,
+      prompt: textPrompt,
+      sourceImage: item.sourceImage,
+      signal: attemptSignal,
+    }))
+  } catch (err) {
+    assertNotAborted(signal)
+    textFallbackReason = getErrorMessage(err)
+    onProgress?.({ slideIndex: item.plan.index, stage: 'text', message: `B7 ${slideNo}: using editable outline fallback text` })
+    texts = buildFallbackTextBoxes(item.plan)
+  }
 
   const layout = {
     slide_width_in: 13.333,
@@ -657,6 +798,7 @@ async function convertSlide(opts: {
         }))
       : [{ file: 'icons.png', x: 0, y: 0, w: 1, h: 1, role: 'icons_layer' }],
     texts: texts.map(toLayoutText),
+    ...(textFallbackReason ? { text_fallback_reason: textFallbackReason } : {}),
   }
   const assetManifest = {
     schema: 'gorden-image2pptx-assets/v1',
@@ -686,6 +828,12 @@ async function convertSlide(opts: {
         copied_to: `editable/${slideNo}/icons.png`,
       },
     ],
+    text_extraction: {
+      backend,
+      prompt_file: `editable/${slideNo}/prompts/text.md`,
+      boxes: texts.length,
+      ...(textFallbackReason ? { fallback_reason: textFallbackReason } : {}),
+    },
   }
 
   return {
@@ -897,9 +1045,12 @@ export async function runGordenSuperPptSkillFlow(opts: {
   }))
 
   const converted: ConvertedSlide[] = []
+  const conversionConcurrency = Math.min(clampPptConcurrency(opts.concurrency), GORDEN_CONVERSION_MAX_CONCURRENCY)
+  opts.onProgress?.({ stage: 'stage-a', message: `B1: converting ${prepared.length} slides with ${conversionConcurrency} parallel workers` })
+
   await runWithConcurrency(
     prepared,
-    clampPptConcurrency(opts.concurrency),
+    conversionConcurrency,
     async (item) => {
       const slide = await convertSlide({
         item,
