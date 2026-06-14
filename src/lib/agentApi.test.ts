@@ -308,10 +308,7 @@ describe('callAgentResponsesApi', () => {
   })
 
   it("does not duplicate the assistant message item when response.completed lacks an item id", async () => {
-    // Real-world Responses API SSE stream: response.output_item.added/done emit the item
-    // with a stable id; response.completed re-states the same item inside response.output
-    // but WITHOUT the id. The publishOutputItems dedupe must not push that as a new item,
-    // otherwise the message gets rendered twice in the agent UI.
+    // `response.completed` can repeat the streamed item without id; it should merge, not append.
     const itemId = "msg_abc123"
     const streamBody = [
       `data: {"type":"response.created","response":{"id":"resp_1","output":[]}}`,
@@ -348,8 +345,6 @@ describe('callAgentResponsesApi', () => {
       onOutputItems: (items) => outputItemSnapshots.push(items.length),
     })
 
-    // The response.completed re-emit (without id) must be matched against the existing
-    // streamed item, not appended.
     const messageItems = (result.outputItems ?? []).filter((item) => item.type === "message")
     expect(messageItems).toHaveLength(1)
     expect(result.text).toBe("hi!")
