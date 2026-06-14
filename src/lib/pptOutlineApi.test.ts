@@ -63,7 +63,7 @@ describe('pptOutlineApi', () => {
 
     expect(outline).toBe('AI 未来趋势\n建立判断。')
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.openai.com/v1/responses',
+      'https://macode.cloud/v1/responses',
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({

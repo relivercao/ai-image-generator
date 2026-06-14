@@ -1,0 +1,20 @@
+{
+  "name": "macode-image-playground-auth-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auth bridge for Macode Image Playground and New API MySQL users",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.12.0"
+  }
+}

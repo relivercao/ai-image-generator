@@ -52,6 +52,7 @@ import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
+import { AUTH_TOKEN_STORAGE_KEY, requestMacodeAuth } from './lib/authApi'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
@@ -125,6 +126,7 @@ const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤
 const GALLERY_MAX_GENERATION_RETRIES = 3
 const GALLERY_RETRY_BASE_DELAY_MS = 1200
 const GALLERY_RETRY_MAX_DELAY_MS = 6000
+const MACODE_OPENAI_BASE_URL = 'https://macode.cloud/v1'
 
 type TimeoutStreamingHintProfile = Pick<ApiProfile, 'provider' | 'streamImages' | 'streamPartialImages'>
 
@@ -138,6 +140,24 @@ function getTimeoutStreamingHint(profile?: TimeoutStreamingHintProfile | null) {
 
 function createOpenAITimeoutError(timeoutSeconds: number, profile?: TimeoutStreamingHintProfile | null) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。${getTimeoutStreamingHint(profile)}`
+}
+
+function shouldPromptForMacodeLogin(validation: string | null, profile: ApiProfile) {
+  return validation === '缺少 API Key' &&
+    profile.provider === 'openai' &&
+    profile.baseUrl.replace(/\/+$/, '') === MACODE_OPENAI_BASE_URL
+}
+
+function promptForMacodeApiKey(showToast: (message: string, type?: ToastType) => void) {
+  const hasSession = typeof localStorage !== 'undefined' && Boolean(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
+
+  if (hasSession) {
+    showToast('当前 macode 账号没有可用 API Key，请先在主站创建令牌', 'error')
+    return
+  }
+
+  showToast('请先登录 macode 账号，系统会自动配置 API Key', 'error')
+  if (typeof window !== 'undefined') requestMacodeAuth()
 }
 
 export function getCachedImage(id: string): string | undefined {
@@ -2356,8 +2376,14 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     }
   }
 
-  if (validateApiProfile(activeProfile)) {
-    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
+  const profileValidation = validateApiProfile(activeProfile)
+  if (profileValidation) {
+    if (shouldPromptForMacodeLogin(profileValidation, activeProfile)) {
+      promptForMacodeApiKey(showToast)
+      return
+    }
+
+    showToast(`请先完善请求 API 配置：${profileValidation}`, 'error')
     useStore.getState().setShowSettings(true)
     return
   }
@@ -3240,8 +3266,14 @@ export async function submitAgentMessage() {
     return
   }
 
-  if (validateApiProfile(activeProfile)) {
-    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
+  const profileValidation = validateApiProfile(activeProfile)
+  if (profileValidation) {
+    if (shouldPromptForMacodeLogin(profileValidation, activeProfile)) {
+      promptForMacodeApiKey(showToast)
+      return
+    }
+
+    showToast(`请先完善请求 API 配置：${profileValidation}`, 'error')
     state.setShowSettings(true)
     return
   }

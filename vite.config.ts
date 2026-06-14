@@ -19,6 +19,33 @@ function loadDevProxyConfig() {
 
 export default defineConfig(({ command, mode }) => {
   const devProxyConfig = command === 'serve' && mode !== 'test' ? loadDevProxyConfig() : null
+  const authProxyEnabled = command === 'serve' && mode !== 'test' && process.env.VITE_AUTH_DEV_PROXY !== 'false'
+  const authProxyTarget = process.env.VITE_AUTH_DEV_PROXY_TARGET || 'http://127.0.0.1:3004'
+  const serverProxy = {
+    ...(devProxyConfig?.enabled
+      ? {
+          [devProxyConfig.prefix]: {
+            target: devProxyConfig.target,
+            changeOrigin: devProxyConfig.changeOrigin,
+            secure: devProxyConfig.secure,
+            rewrite: (path: string) =>
+              path.replace(
+                new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+                '',
+              ),
+          },
+        }
+      : {}),
+    ...(authProxyEnabled
+      ? {
+          '/api': {
+            target: authProxyTarget,
+            changeOrigin: true,
+            secure: false,
+          },
+        }
+      : {}),
+  }
 
   return {
     plugins: [react()],
@@ -29,21 +56,7 @@ export default defineConfig(({ command, mode }) => {
     },
     server: {
       host: true,
-      proxy:
-        devProxyConfig?.enabled
-          ? {
-              [devProxyConfig.prefix]: {
-                target: devProxyConfig.target,
-                changeOrigin: devProxyConfig.changeOrigin,
-                secure: devProxyConfig.secure,
-                rewrite: (path) =>
-                  path.replace(
-                    new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
-                    '',
-                  ),
-              },
-            }
-          : undefined,
+      proxy: Object.keys(serverProxy).length ? serverProxy : undefined,
     },
     build: {
       rollupOptions: {

@@ -2,7 +2,7 @@
   "enabled": true,
   "locked": true,
   "prefix": "/api-proxy",
-  "target": "https://api.openai.com/v1",
+  "target": "https://macode.cloud/v1",
   "changeOrigin": true,
   "secure": true
 }

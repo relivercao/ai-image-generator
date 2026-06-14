@@ -21,6 +21,7 @@ import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
+import { useAutoConfigureApiKey } from './hooks/useAutoConfigureApiKey'
 
 let customProviderConfigUrlImportStarted = false
 
@@ -31,6 +32,7 @@ export default function App() {
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
+  useAutoConfigureApiKey()
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search)

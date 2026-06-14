@@ -3,3 +3,4 @@ dist/
 dev-proxy.config.json
 .wrangler/
 sample-output/
+server/.env

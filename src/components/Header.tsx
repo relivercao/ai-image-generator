@@ -8,6 +8,9 @@ import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
 import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
+import AuthModal from './AuthModal'
+import { useAuth } from '../contexts/AuthContext'
+import { MACODE_AUTH_REQUIRED_EVENT } from '../lib/authApi'
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -39,8 +42,10 @@ export default function Header() {
   const [hintVisible, setHintVisible] = useState(false)
   const [scrollDirection, setScrollDirection] = useState<'up' | 'down'>('up')
   const [showHistoryModal, setShowHistoryModal] = useState(false)
+  const [showAuth, setShowAuth] = useState(false)
   const historyButtonRef = useRef<HTMLButtonElement>(null)
   const createConversation = useStore((s) => s.createAgentConversation)
+  const { user, logout, isLoading: authLoading } = useAuth()
 
   useEffect(() => {
     if (appMode === 'agent') {
@@ -82,6 +87,12 @@ export default function Header() {
       return () => clearTimeout(timer)
     }
   }, [appMode, agentMobileHeaderVisible])
+
+  useEffect(() => {
+    const openAuth = () => setShowAuth(true)
+    window.addEventListener(MACODE_AUTH_REQUIRED_EVENT, openAuth)
+    return () => window.removeEventListener(MACODE_AUTH_REQUIRED_EVENT, openAuth)
+  }, [])
 
   const installTooltip = useTooltip()
   const helpTooltip = useTooltip()
@@ -259,6 +270,29 @@ export default function Header() {
             </button>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {user ? (
+              <div className="mr-1 flex min-w-0 items-center gap-1.5">
+                <span className="hidden max-w-[8rem] truncate text-sm text-gray-700 dark:text-gray-300 sm:inline" title={user.displayName || user.username}>
+                  {user.displayName || user.username}
+                </span>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="rounded-lg bg-gray-100 px-2 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-200 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] sm:px-3"
+                >
+                  退出
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowAuth(true)}
+                disabled={authLoading}
+                className="mr-1 rounded-lg bg-blue-600 px-2 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400 sm:px-3"
+              >
+                登录
+              </button>
+            )}
             {!isPwaInstalled && (
               <div
                 className="relative"
@@ -357,6 +391,7 @@ export default function Header() {
         </div>
       </div>
       {showHelp && <HelpModal appMode={appMode} isFavoriteCollectionOverview={appMode === 'gallery' && filterFavorite && !activeFavoriteCollectionId} onClose={() => setShowHelp(false)} />}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
     </>
   )
 }
