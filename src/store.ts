@@ -41,7 +41,7 @@ import {
   clearImages,
   storeImage,
 } from './lib/db'
-import { callImageApi } from './lib/api'
+import { callImageApi, type CallApiOptions, type CallApiResult } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
@@ -122,6 +122,9 @@ export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about'
 const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，并提高「请求中间步骤图像数」来维持连接。'
 const TIMEOUT_PARTIAL_IMAGES_ZERO_HINT = '官方流式接口不发送心跳，当前「请求中间步骤图像数」为 0，连接可能因无数据传输而断开。建议提高到 2 或 3。'
 const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤图像数」来维持连接，避免长时间无数据传输导致断开。'
+const GALLERY_MAX_GENERATION_RETRIES = 3
+const GALLERY_RETRY_BASE_DELAY_MS = 1200
+const GALLERY_RETRY_MAX_DELAY_MS = 6000
 
 type TimeoutStreamingHintProfile = Pick<ApiProfile, 'provider' | 'streamImages' | 'streamPartialImages'>
 
@@ -1872,6 +1875,59 @@ function isApiRequestNetworkError(err: unknown): boolean {
     return /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(message)
   }
   return false
+}
+
+function getPlainErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isGalleryRetryableError(err: unknown): boolean {
+  const message = getPlainErrorMessage(err)
+  if (/已停止|stopped|cancelled|canceled|user aborted/i.test(message)) return false
+  if (/401|403|404|api key|unauthorized|forbidden|permission|content policy|moderation|billing|quota|insufficient|invalid|unsupported|payload|file size|mask|输入图片已不存在|遮罩图片已不存在/i.test(message)) {
+    return false
+  }
+  return /abort|network|failed to fetch|fetch failed|load failed|networkerror|timeout|timed out|429|rate.?limit|temporar|unavailable|overload|5\d\d|gateway|bad gateway|service unavailable|连接|断开|中断|超时|限流|繁忙/i.test(message)
+}
+
+function getGalleryRetryDelayMs(failedAttempt: number): number {
+  if (failedAttempt <= 1) return 0
+  const jitter = Math.round(Math.random() * 500)
+  return Math.min(GALLERY_RETRY_MAX_DELAY_MS, GALLERY_RETRY_BASE_DELAY_MS * (failedAttempt - 1) + jitter)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function callGalleryImageApiWithRetry(
+  taskId: string,
+  opts: CallApiOptions,
+): Promise<CallApiResult> {
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= GALLERY_MAX_GENERATION_RETRIES + 1; attempt += 1) {
+    const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
+    if (!latestTask || latestTask.status !== 'running') throw lastError ?? new Error('任务已停止')
+
+    try {
+      return await callImageApi(opts)
+    } catch (err) {
+      lastError = err
+      const latestAfterError = useStore.getState().tasks.find((task) => task.id === taskId)
+      const remoteTaskAlreadyEnqueued = Boolean(latestAfterError?.falRequestId || latestAfterError?.customTaskId)
+      const shouldRetry = attempt <= GALLERY_MAX_GENERATION_RETRIES && !remoteTaskAlreadyEnqueued && isGalleryRetryableError(err)
+      if (!shouldRetry) break
+
+      const waitMs = getGalleryRetryDelayMs(attempt)
+      updateTaskInStore(taskId, {
+        error: `${getPlainErrorMessage(err)}\n正在自动重试 ${attempt}/${GALLERY_MAX_GENERATION_RETRIES}...`,
+      })
+      if (waitMs > 0) await delay(waitMs)
+    }
+  }
+
+  throw lastError
 }
 
 function getApiModeApiName(apiMode: ApiMode) {
@@ -4126,58 +4182,22 @@ async function executeTask(taskId: string) {
     scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
   }
 
-  try {
-    // 获取输入图片 data URLs
-    const inputDataUrls: string[] = []
-    for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
-    }
-    let maskDataUrl: string | undefined
-    if (task.maskImageId) {
-      maskDataUrl = await ensureImageCached(task.maskImageId)
-      if (!maskDataUrl) throw new Error('遮罩图片已不存在')
-    }
+  const partialImagesByRequest = new Map<number, string>()
+  let requestPrompt = task.transparentOutput && task.transparentPrompt
+    ? task.transparentPrompt
+    : task.prompt
+  let maskDataUrl: string | undefined
 
-    const requestPrompt = task.transparentOutput && task.transparentPrompt
-      ? task.transparentPrompt
-      : task.prompt
-
-    const result = await callImageApi({
-      settings: requestSettings,
-      prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
-      params: task.params,
-      inputImageDataUrls: inputDataUrls,
-      maskDataUrl,
-      onFalRequestEnqueued: (request) => {
-        falRequestInfo = request
-        updateTaskInStore(taskId, {
-          falRequestId: request.requestId,
-          falEndpoint: request.endpoint,
-          falRecoverable: false,
-        })
-      },
-      onCustomTaskEnqueued: (request) => {
-        customTaskInfo = request
-        updateTaskInStore(taskId, {
-          customTaskId: request.taskId,
-          customRecoverable: false,
-        })
-      },
-      onPartialImage: (partial) => {
-        useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
-        void persistTaskStreamPartialImage(taskId, partial.image)
-      },
-    })
-
+  const completeWithResult = async (
+    result: CallApiResult,
+    options: { partialFallbackError?: string } = {},
+  ) => {
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
       return
     }
 
-    // 存储输出图片
     const { outputIds, outputDataUrls, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
     const actualParamsList = taskProvider === 'fal'
@@ -4204,12 +4224,11 @@ async function executeTask(taskId: string) {
     if (taskProvider === 'openai' && activeProfile.apiMode === 'responses' && !activeProfile.codexCli) {
       if (promptWasRevised) {
         showCodexCliPrompt()
-      } else if (!hasRevisedPromptValue) {
+      } else if (!hasRevisedPromptValue && !options.partialFallbackError) {
         showCodexCliPrompt(false, '接口没有返回官方 API 会返回的部分信息')
       }
     }
 
-    // 更新任务
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
@@ -4221,13 +4240,14 @@ async function executeTask(taskId: string) {
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       transparentOriginalImages: transparentOriginalImageIds,
-      outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
+      outputErrors: options.partialFallbackError ? undefined : result.failedRequests?.length ? result.failedRequests : undefined,
       streamPartialImageIds: undefined,
       rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
       status: 'done',
+      error: null,
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
       falRecoverable: false,
@@ -4236,10 +4256,12 @@ async function executeTask(taskId: string) {
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
     const failedCount = result.failedRequests?.length ?? 0
-    const completionMessage = failedCount > 0
+    const completionMessage = options.partialFallbackError
+      ? `生成完成：已保留 ${outputIds.length} 张流式预览图，最终响应失败`
+      : failedCount > 0
       ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
       : `生成完成，共 ${outputIds.length} 张图片`
-    useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
+    useStore.getState().showToast(completionMessage, options.partialFallbackError || failedCount > 0 ? 'error' : 'success')
     if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `${completionMessage}。`)
     const currentMask = useStore.getState().maskDraft
     if (
@@ -4250,6 +4272,54 @@ async function executeTask(taskId: string) {
     ) {
       useStore.getState().clearMaskDraft()
     }
+  }
+
+  try {
+    // 获取输入图片 data URLs
+    const inputDataUrls: string[] = []
+    for (const imgId of task.inputImageIds) {
+      const dataUrl = await ensureImageCached(imgId)
+      if (!dataUrl) throw new Error('输入图片已不存在')
+      inputDataUrls.push(dataUrl)
+    }
+    if (task.maskImageId) {
+      maskDataUrl = await ensureImageCached(task.maskImageId)
+      if (!maskDataUrl) throw new Error('遮罩图片已不存在')
+    }
+
+    requestPrompt = task.transparentOutput && task.transparentPrompt
+      ? task.transparentPrompt
+      : task.prompt
+
+    const result = await callGalleryImageApiWithRetry(taskId, {
+      settings: requestSettings,
+      prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
+      params: task.params,
+      inputImageDataUrls: inputDataUrls,
+      maskDataUrl,
+      onFalRequestEnqueued: (request) => {
+        falRequestInfo = request
+        updateTaskInStore(taskId, {
+          falRequestId: request.requestId,
+          falEndpoint: request.endpoint,
+          falRecoverable: false,
+        })
+      },
+      onCustomTaskEnqueued: (request) => {
+        customTaskInfo = request
+        updateTaskInStore(taskId, {
+          customTaskId: request.taskId,
+          customRecoverable: false,
+        })
+      },
+      onPartialImage: (partial) => {
+        partialImagesByRequest.set(partial.requestIndex ?? 0, partial.image)
+        useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
+        void persistTaskStreamPartialImage(taskId, partial.image)
+      },
+    })
+
+    await completeWithResult(result)
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
@@ -4281,7 +4351,28 @@ async function executeTask(taskId: string) {
       })
       scheduleCustomRecovery(taskId)
     } else {
-      let errorMessage = err instanceof Error ? err.message : String(err)
+      let finalErr: unknown = err
+      const partialFallbackImages = Array.from(partialImagesByRequest.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([, image]) => image)
+        .filter(Boolean)
+      if (partialFallbackImages.length > 0) {
+        try {
+          await completeWithResult({
+            images: partialFallbackImages,
+            actualParams: { ...task.params, n: partialFallbackImages.length },
+            actualParamsList: partialFallbackImages.map(() => ({ ...task.params, n: 1 })),
+            revisedPrompts: [],
+          }, { partialFallbackError: getPlainErrorMessage(err) })
+          return
+        } catch (fallbackErr) {
+          console.warn('Failed to rescue gallery task from partial images:', fallbackErr)
+          finalErr = fallbackErr
+        }
+      }
+
+      useStore.getState().setTaskStreamPreview(taskId)
+      let errorMessage = getPlainErrorMessage(finalErr)
       const settings = useStore.getState().settings
       const profile = getTaskApiProfile(settings, latestTask)
       const usesApiProxy = profile?.apiProxy ?? settings.apiProxy
@@ -4292,14 +4383,14 @@ async function executeTask(taskId: string) {
         streamImages: activeProfile.streamImages,
         streamPartialImages: activeProfile.streamPartialImages,
       }
-      const networkErrorHint = getApiRequestNetworkErrorHint(err, latestTask.createdAt, usesApiProxy, hintProfile)
+      const networkErrorHint = getApiRequestNetworkErrorHint(finalErr, latestTask.createdAt, usesApiProxy, hintProfile)
       if (networkErrorHint && !errorMessage.includes(IMAGE_FETCH_CORS_HINT)) {
         errorMessage += `\n${networkErrorHint}`
       }
       updateTaskInStore(taskId, {
         status: 'error',
         error: errorMessage,
-        ...getRawErrorPayload(err),
+        ...getRawErrorPayload(finalErr),
         falRecoverable: false,
         customRecoverable: false,
         finishedAt: Date.now(),

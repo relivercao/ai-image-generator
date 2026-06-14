@@ -377,6 +377,69 @@ describe('mask draft lifecycle in store actions', () => {
     await clearImages()
   })
 
+  it('retries transient gallery image failures before marking the task failed', async () => {
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({
+        images: ['data:image/png;base64,retry-generated'],
+        actualParams: { output_format: 'png' },
+        actualParamsList: [{ output_format: 'png' }],
+        revisedPrompts: [],
+      })
+    useStore.setState({
+      prompt: 'retry prompt',
+      params: { ...DEFAULT_PARAMS, output_format: 'png' },
+    })
+
+    await submitTask()
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    const [task] = useStore.getState().tasks
+    expect(task).toMatchObject({
+      status: 'done',
+      error: null,
+    })
+    const outputImage = await getImage(task.outputImages[0])
+    expect(outputImage?.dataUrl).toBe('data:image/png;base64,retry-generated')
+    await clearTasks()
+    await clearImages()
+  })
+
+  it('rescues a gallery task with the latest streamed partial image when the final response fails', async () => {
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onPartialImage?.({ image: 'data:image/png;base64,partial-generated', requestIndex: 0 })
+      throw new Error('stream ended before final image')
+    })
+    useStore.setState({
+      prompt: 'partial prompt',
+      params: { ...DEFAULT_PARAMS, output_format: 'png' },
+    })
+
+    await submitTask()
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const [task] = useStore.getState().tasks
+    expect(task).toMatchObject({
+      status: 'done',
+      error: null,
+      outputErrors: undefined,
+    })
+    const outputImage = await getImage(task.outputImages[0])
+    expect(outputImage?.dataUrl).toBe('data:image/png;base64,partial-generated')
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('流式预览图'), 'error')
+    await clearTasks()
+    await clearImages()
+  })
+
   it('supports transparent background post-processing for fal gallery tasks', async () => {
     const { callImageApi } = await import('./lib/api')
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
