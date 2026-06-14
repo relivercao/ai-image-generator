@@ -793,8 +793,8 @@ export default function InputBar() {
   const nLimitHintText = agentAutoImageCount
     ? 'Agent 模式下数量由模型根据提示词自动决定'
     : isFalProvider
-    ? `fal.ai 最大请求数量为 ${outputImageLimit}`
-    : `OpenAI 最大请求数量为 ${outputImageLimit}`
+    ? `macode.cloud 队列通道最大请求数量为 ${outputImageLimit}`
+    : `macode.cloud 最大请求数量为 ${outputImageLimit}`
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : normalizeImageSize(params.size) || DEFAULT_PARAMS.size
@@ -1943,7 +1943,7 @@ export default function InputBar() {
         </button>
         <ButtonTooltip
           visible={isFalTextToImage && sizeHint.visible}
-          text={<>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>}
+          text={<>macode.cloud 队列通道的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>}
         />
       </label>
       <label
@@ -1969,7 +1969,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={(settings.codexCli || isFalProvider) && qualityHint.visible}
-          text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
+          text={isFalProvider ? <>macode.cloud 队列通道不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
         />
       </label>
       <label className="flex flex-col gap-0.5">
@@ -2047,7 +2047,7 @@ export default function InputBar() {
           />
           <ButtonTooltip
             visible={compressionHint.visible}
-            text={isFalProvider ? 'fal.ai 不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
+            text={isFalProvider ? 'macode.cloud 队列通道不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
           />
         </label>
       )}
@@ -2077,7 +2077,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={moderationDisabled && moderationHint.visible}
-          text="fal.ai 不支持审核参数"
+          text="macode.cloud 队列通道不支持审核参数"
         />
       </label>
       <label

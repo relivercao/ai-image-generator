@@ -25,7 +25,7 @@ describe('callFalAiImageApi', () => {
     vi.clearAllMocks()
   })
 
-  it('uses the default fal endpoint without proxyUrl', async () => {
+  it('uses macode.cloud as the default queue proxyUrl', async () => {
     falMock.subscribe.mockResolvedValue({
       requestId: 'req-1',
       data: { images: [{ b64_json: 'aW1hZ2U=' }] },
@@ -41,10 +41,11 @@ describe('callFalAiImageApi', () => {
     expect(falMock.config).toHaveBeenCalledWith({
       credentials: 'fal-key',
       suppressLocalCredentialsWarning: true,
+      proxyUrl: DEFAULT_FAL_BASE_URL,
     })
   })
 
-  it('passes custom fal API URL to the SDK proxyUrl option', async () => {
+  it('passes custom queue API URL to the SDK proxyUrl option', async () => {
     falMock.subscribe.mockResolvedValue({
       requestId: 'req-1',
       data: { images: [{ b64_json: 'aW1hZ2U=' }] },

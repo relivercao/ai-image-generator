@@ -1,6 +1,6 @@
 import { fal } from '@fal-ai/client'
 import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
-import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
+import { DEFAULT_FAL_BASE_URL, normalizeFalBaseUrl } from './apiProfiles'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -37,12 +37,12 @@ function mapFalQuality(quality: TaskParams['quality']): 'low' | 'medium' | 'high
 }
 
 function configureFal(profile: ApiProfile) {
-  const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
+  const baseUrl = normalizeFalBaseUrl(profile.baseUrl)
   const config: Parameters<typeof fal.config>[0] = {
     credentials: profile.apiKey,
     suppressLocalCredentialsWarning: true,
+    proxyUrl: baseUrl,
   }
-  if (baseUrl !== DEFAULT_FAL_BASE_URL) config.proxyUrl = baseUrl
   fal.config(config)
 }
 
@@ -124,8 +124,8 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
   if (!results.length) {
     const err = new Error(
       customBaseUrlLabel
-        ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与 fal.ai 格式不兼容，建议创建并使用「自定义服务商」配置。`
-        : 'fal.ai 未返回可用图片数据',
+        ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与 macode.cloud 队列格式不兼容，建议创建并使用「自定义服务商」配置。`
+        : 'macode.cloud 队列未返回可用图片数据',
     )
     if (customBaseUrlLabel) {
       ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
@@ -175,7 +175,7 @@ export function getFalErrorMessage(err: unknown): string | null {
 }
 
 function getFalCustomBaseUrlLabel(profile: ApiProfile): string | null {
-  const base = profile.baseUrl.trim().replace(/\/+$/, '')
+  const base = normalizeFalBaseUrl(profile.baseUrl)
   if (!base || base === DEFAULT_FAL_BASE_URL) return null
   return base.replace(/^https?:\/\//, '')
 }
@@ -203,7 +203,7 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
         (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
     )
 
-    // 使用当前配置保存的 API Key，避免 fal SDK 额外输出前端凭据警告。
+    // 使用当前配置保存的 API Key，避免 SDK 额外输出前端凭据警告。
     configureFal(profile)
 
     const isEdit = opts.inputImageDataUrls.length > 0

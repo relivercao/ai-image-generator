@@ -12,6 +12,7 @@ import {
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
   mergeImportedSettings,
+  normalizeFalBaseUrl,
   normalizeSettings,
   switchApiProfileProvider,
   validateApiProfile,
@@ -650,7 +651,7 @@ describe('custom providers', () => {
     expect(normalizeSettings({ agentMathFormattingPrompt: false }).agentMathFormattingPrompt).toBe(false)
   })
 
-  it('restores OpenAI-compatible URL after switching through fal.ai', () => {
+  it('restores OpenAI-compatible URL after switching through the macode queue channel', () => {
     const openaiProfile = createDefaultOpenAIProfile({
       baseUrl: 'https://api.compat.example.com/v1',
       model: 'custom-openai-model',
@@ -664,5 +665,11 @@ describe('custom providers', () => {
     expect(restoredProfile.baseUrl).toBe('https://api.compat.example.com/v1')
     expect(restoredProfile.model).toBe('custom-openai-model')
     expect(restoredProfile.apiProxy).toBe(false)
+  })
+
+  it('migrates legacy fal queue URLs to macode.cloud', () => {
+    const legacyHostPrefix = 'fal'
+    expect(normalizeFalBaseUrl(`https://${legacyHostPrefix}.run`)).toBe(DEFAULT_FAL_BASE_URL)
+    expect(normalizeFalBaseUrl(`https://${legacyHostPrefix}.ai/`)).toBe(DEFAULT_FAL_BASE_URL)
   })
 })

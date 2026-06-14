@@ -19,6 +19,7 @@ import {
   mergeImportedSettings,
   normalizeAgentMaxToolRounds,
   normalizeCustomProviderDefinition,
+  normalizeFalBaseUrl,
   normalizeSettings,
   normalizeStreamPartialImages,
   switchApiProfileProvider,
@@ -367,8 +368,8 @@ export default function SettingsModal() {
   const providerOrder = draft.providerOrder || defaultProviderOrder
 
   const unorderedProviderOptions = [
-    { label: 'OpenAI 兼容接口', value: 'openai', draggable: true },
-    { label: 'fal.ai', value: 'fal', draggable: true },
+    { label: 'macode.cloud 兼容接口', value: 'openai', draggable: true },
+    { label: 'macode.cloud 队列通道', value: 'fal', draggable: true },
     ...draft.customProviders.map((provider) => ({
       label: provider.name,
       value: provider.id,
@@ -519,7 +520,7 @@ export default function SettingsModal() {
       const nextApiProxy = isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false
       const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
       const normalizedBaseUrl = profile.provider === 'fal'
-        ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
+        ? normalizeFalBaseUrl(profile.baseUrl)
         : shouldKeepEmptyBaseUrl ? '' : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
       const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
       return {
@@ -1034,7 +1035,7 @@ export default function SettingsModal() {
   function confirmDeleteCustomProvider(provider: CustomProviderDefinition) {
     setConfirmDialog({
       title: '删除服务商',
-      message: `确定要删除自定义服务商「${provider.name}」吗？正在使用它的配置会切回 OpenAI 兼容接口。`,
+      message: `确定要删除自定义服务商「${provider.name}」吗？正在使用它的配置会切回 macode.cloud 兼容接口。`,
       action: () => deleteCustomProvider(provider),
     })
   }
@@ -1677,7 +1678,7 @@ export default function SettingsModal() {
                     {apiProxyEnabled ? (
                       <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
                     ) : activeProfile.provider === 'fal' ? (
-                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
+                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 macode.cloud 队列代理 URL。</span>
                     ) : (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
@@ -1719,7 +1720,7 @@ export default function SettingsModal() {
                     onChange={(e) => updateActiveProfile({ apiKey: e.target.value })}
                     onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value })}
                     type={showApiKey ? 'text' : 'password'}
-                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : 'sk-...'}
+                    placeholder={activeProfile.provider === 'fal' ? 'macode API Key' : 'sk-...'}
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 pr-10 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                   <button

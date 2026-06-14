@@ -1238,7 +1238,7 @@ export const useStore = create<AppState>()(
 
         state.setConfirmDialog({
           title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
+          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 macode.cloud 兼容配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
           confirmText: '去设置',
           cancelText: '取消',
           action: () => {
@@ -1783,7 +1783,7 @@ function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number, profile?
   const timer = setTimeout(() => {
     openAIWatchdogTimers.delete(taskId)
     const failed = failOpenAITaskIfStillRunning(taskId, createOpenAITimeoutError(timeoutSeconds, profile))
-    if (failed) useStore.getState().showToast('OpenAI 任务请求超时', 'error')
+    if (failed) useStore.getState().showToast('macode.cloud 任务请求超时', 'error')
   }, remainingMs)
   openAIWatchdogTimers.set(taskId, timer)
 }
@@ -2103,8 +2103,8 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     finishedAt: Date.now(),
     elapsed: Date.now() - task.createdAt,
   })
-  useStore.getState().showToast(`fal.ai 任务已恢复，共 ${outputIds.length} 张图片`, 'success')
-  if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `fal.ai 任务已恢复，共 ${outputIds.length} 张图片。`)
+  useStore.getState().showToast(`macode.cloud 队列任务已恢复，共 ${outputIds.length} 张图片`, 'success')
+  if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `macode.cloud 队列任务已恢复，共 ${outputIds.length} 张图片。`)
 }
 
 async function recoverFalTask(taskId: string) {
@@ -4364,7 +4364,7 @@ async function executeTask(taskId: string) {
     if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
       updateTaskInStore(taskId, {
         status: 'error',
-        error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
+        error: '与 macode.cloud 队列通道的连接已断开，之后会继续查询任务结果。',
         falRequestId: latestFalRequestInfo.requestId,
         falEndpoint: latestFalRequestInfo.endpoint,
         falRecoverable: true,

@@ -27,11 +27,16 @@ const DEFAULT_BASE_URL = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   : RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL)
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
-export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
+export const DEFAULT_FAL_BASE_URL = 'https://macode.cloud'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
+const LEGACY_FAL_HOST_PREFIX = 'fal'
+const LEGACY_FAL_BASE_URLS = new Set([
+  `https://${LEGACY_FAL_HOST_PREFIX}.run`,
+  `https://${LEGACY_FAL_HOST_PREFIX}.ai`,
+])
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
@@ -59,6 +64,12 @@ const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
 ]
 
 type ApiProfileProviderDraft = NonNullable<ApiProfile['providerDrafts']>[ApiProvider]
+
+export function normalizeFalBaseUrl(value: unknown): string {
+  const trimmed = typeof value === 'string' ? value.trim().replace(/\/+$/, '') : ''
+  if (!trimmed || LEGACY_FAL_BASE_URLS.has(trimmed.toLowerCase())) return DEFAULT_FAL_BASE_URL
+  return trimmed
+}
 
 function getDefaultStreamImages(provider: ApiProvider, apiMode: ApiMode): boolean {
   return provider === 'openai' && apiMode === 'responses'
@@ -351,7 +362,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     return {
       ...profile,
       provider,
-      baseUrl: savedDraft?.baseUrl ?? DEFAULT_FAL_BASE_URL,
+      baseUrl: normalizeFalBaseUrl(savedDraft?.baseUrl),
       model: savedDraft?.model ?? DEFAULT_FAL_MODEL,
       apiMode: 'images',
       codexCli: false,
@@ -413,9 +424,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
   if (!knownProvider) return undefined
 
   return {
-    baseUrl: provider === 'fal'
-      ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-      : baseUrl,
+    baseUrl: provider === 'fal' ? normalizeFalBaseUrl(baseUrl) : baseUrl,
     model,
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
@@ -453,7 +462,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     id: typeof record.id === 'string' && record.id.trim() ? record.id : defaults.id,
     name: typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name,
     provider,
-    baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL : rawBaseUrl,
+    baseUrl: provider === 'fal' ? normalizeFalBaseUrl(rawBaseUrl) : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
@@ -540,8 +549,8 @@ export function getCustomProviderDefinition(settings: Partial<AppSettings> | unk
 }
 
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
-  if (provider === 'fal') return 'fal.ai'
-  if (provider === 'openai') return 'OpenAI'
+  if (provider === 'fal') return 'macode.cloud 队列通道'
+  if (provider === 'openai') return 'macode.cloud'
   return getCustomProviderDefinition(settings, provider)?.name ?? provider
 }
 

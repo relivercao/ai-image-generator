@@ -167,11 +167,11 @@ export interface TaskRecord {
   apiMode?: ApiMode
   /** 生成时使用的模型 ID */
   apiModel?: string
-  /** fal.ai 队列请求 ID，用于连接断开后的结果恢复 */
+  /** macode.cloud 队列请求 ID，用于连接断开后的结果恢复 */
   falRequestId?: string
-  /** fal.ai 队列 endpoint，用于连接断开后的状态和结果查询 */
+  /** macode.cloud 队列 endpoint，用于连接断开后的状态和结果查询 */
   falEndpoint?: string
-  /** fal.ai 任务连接断开后是否等待自动恢复 */
+  /** macode.cloud 队列任务连接断开后是否等待自动恢复 */
   falRecoverable?: boolean
   /** 自定义异步服务商任务 ID，用于重启后继续查询结果 */
   customTaskId?: string

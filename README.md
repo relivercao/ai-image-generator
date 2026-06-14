@@ -8,9 +8,9 @@
 [![React](https://img.shields.io/badge/React-19-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-**基于 OpenAI gpt-image-2 API 的图片生成与编辑工具**
+**基于 macode.cloud / OpenAI 兼容图像 API 的图片生成与编辑工具**
 
-提供简洁精美的 Web UI，支持 OpenAI / OpenAI 兼容接口、fal.ai 与可导入的自定义 HTTP 服务商。<br>
+提供简洁精美的 Web UI，默认支持 macode.cloud 兼容接口、macode.cloud 队列通道与可导入的自定义 HTTP 服务商。<br>
 支持文本生图、参考图与遮罩编辑，数据纯本地化存储，带来流畅的历史记录与参数管理体验。
 
 <br>
@@ -132,8 +132,8 @@
 
 ### 🔌 多配置与服务商增强
 - **多配置管理**：支持创建并保存多个 API 配置（包含服务商、API Key、模型等），按需快速切换；支持一键复制当前配置到列表底部，并通过拖拽对配置列表与服务商列表进行自定义排序。
-- **多服务商接入**：内置 OpenAI 兼容接口（含 `Images API` 和 `Responses API`）、fal.ai（支持队列），并支持通过 JSON 导入自定义 HTTP 服务商配置（兼容同步/异步任务）。
-- **API 代理**：OpenAI 兼容接口与 fal.ai 均可配置自定义代理。其中 OpenAI 兼容接口可开启同源 `/api-proxy/` 代理，交由 Docker 或本地开发环境转发至真实 API，绕开浏览器 CORS 限制。
+- **多服务商接入**：内置 macode.cloud 兼容接口（含 `Images API` 和 `Responses API`）、macode.cloud 队列通道，并支持通过 JSON 导入自定义 HTTP 服务商配置（兼容同步/异步任务）。
+- **API 代理**：macode.cloud 兼容接口与队列通道均可配置自定义代理。其中兼容接口可开启同源 `/api-proxy/` 代理，交由 Docker 或本地开发环境转发至真实 API，绕开浏览器 CORS 限制。
 - **Codex CLI 兼容模式**：对上游为 Codex CLI 的 API，开启后应用 Codex CLI 实际支持的参数，并将多图生成拆分为并发单图。
 - **提示词防改写**：Responses API 会始终在请求文本前加入强制指令防止提示词被改写；开启 Codex CLI 模式后，Images API 也会获得同等保护。
 - **智能诊断提示**：当检测到接口异常改写行为或缺少常规参数时，自动提示开启相应的兼容模式。
@@ -212,7 +212,7 @@ $env:VITE_DEFAULT_API_URL="https://macode.cloud/v1"; npm run deploy:cf
 **环境变量说明：**
 
 - `DEFAULT_API_URL`：设置页面上默认显示的 API 地址（如 `https://macode.cloud/v1`）。也支持填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL 来导入自定义服务商配置（详见下方说明）。
-- `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://macode.cloud/v1`。
+- `API_PROXY_URL`：配置内置代理实际转发到的完整 API 基础地址（仅开启代理时有效）。代理不会自动补 `/v1`，macode.cloud 兼容接口通常必须填写到版本前缀，如 `https://macode.cloud/v1`。
 - `ENABLE_API_PROXY`：设为 `true` 开启容器内置 Nginx 同源代理，用于解决浏览器跨域（CORS）限制。开启后，前端 **API 代理** 开关默认开启，浏览器会请求同源的 `/api-proxy/{接口相对路径}`，再由 Nginx 拼接到 `API_PROXY_URL` 后转发；用户仍可在设置中手动关闭。
 - `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
 - `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
@@ -223,7 +223,7 @@ $env:VITE_DEFAULT_API_URL="https://macode.cloud/v1"; npm run deploy:cf
 
 > 💡 **隐藏真实 API 地址**：如果不希望用户在前端看到真实的 API 上游地址，可以配合 `ENABLE_API_PROXY=true` 和 `LOCK_API_PROXY=true` 强制所有请求走服务器代理，再将 `API_PROXY_URL` 设为真实的 API 上游地址。根据使用的服务商类型，`DEFAULT_API_URL` 的填法不同：
 >
-> - **OpenAI 兼容接口**：将 `DEFAULT_API_URL` 留空或填写一个占位地址（如 `https://proxy`）。
+> - **macode.cloud 兼容接口**：将 `DEFAULT_API_URL` 留空或填写一个占位地址（如 `https://proxy`）。
 > - **自定义服务商配置**：将 `DEFAULT_API_URL` 设为配置 URL（`.json` 或带 `settings` 参数的分享 URL），配置 JSON 中 profile 的 `baseUrl` 留空或填占位地址，并设置 `apiProxy:true`。
 >
 > 这样前端设置页只会显示空值或占位地址，真实 API 地址仅存在于服务器侧的 `API_PROXY_URL`，不会暴露给用户。
@@ -243,7 +243,7 @@ docker run -d -p 8080:80 \
   ghcr.io/macode/gpt_image_playground:latest
 ```
 
-**隐藏真实 API 地址示例（OpenAI 兼容接口）：**
+**隐藏真实 API 地址示例（macode.cloud 兼容接口）：**
 
 ```bash
 docker run -d -p 8080:80 \
@@ -312,7 +312,7 @@ npm run dev
 cp dev-proxy.config.example.json dev-proxy.config.json
 ```
 
-修改 `dev-proxy.config.json`，将 `target` 设置为真实的完整 API 基础地址。代理不会自动补 `/v1`，OpenAI 兼容接口通常必须填写到版本前缀，如 `https://api.example.com/v1`。重启开发服务器后，在页面设置中开启 **API 代理** 即可（请求将被转发如 `http://localhost:5173/api-proxy/... -> target/...`）。此功能仅在 `npm run dev` 阶段生效，不会影响打包产物。
+修改 `dev-proxy.config.json`，将 `target` 设置为真实的完整 API 基础地址。代理不会自动补 `/v1`，macode.cloud 兼容接口通常必须填写到版本前缀，如 `https://api.example.com/v1`。重启开发服务器后，在页面设置中开启 **API 代理** 即可（请求将被转发如 `http://localhost:5173/api-proxy/... -> target/...`）。此功能仅在 `npm run dev` 阶段生效，不会影响打包产物。
 
 **3. 本地故障模拟 API (可选)**
 
@@ -340,7 +340,7 @@ npm run build
 
 应用支持通过 URL 查询参数快速填入配置，非常适合创建书签或集成分享。根据你的服务商类型，选择对应的方式：
 
-**方式一：标准 OpenAI 兼容服务商**
+**方式一：macode.cloud / OpenAI 兼容服务商**
 直接使用简短的查询参数配置：
 - `?apiUrl=https://你的代理地址.com`
 - `?apiKey=sk-xxxx`

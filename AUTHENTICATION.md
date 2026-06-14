@@ -19,7 +19,13 @@ npm run dev
 npm run dev
 ```
 
-Vite 会把 `/api/*` 代理到 `http://127.0.0.1:3004`。生产环境可以把 `VITE_AUTH_API_BASE_URL` 指向 `https://macode.cloud/api`，或在同域部署时保持 `/api`。
+本地开发默认会直连 `http://127.0.0.1:3004/api`。生产环境可以把 `VITE_AUTH_API_BASE_URL` 指向 `https://macode.cloud/api`，或在同域部署时保持 `/api`。
+
+后端既支持单独配置 `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`，也支持直接复用 New API 的 Go 风格 `SQL_DSN`：
+
+```env
+SQL_DSN=root:password@tcp(127.0.0.1:3306)/newapi?parseTime=true
+```
 
 ## 数据库复用方式
 

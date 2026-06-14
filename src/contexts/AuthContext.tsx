@@ -27,6 +27,7 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+const AUTH_REQUEST_TIMEOUT_MS = 15_000
 
 function readStoredUser(): AuthUser | null {
   const raw = localStorage.getItem(AUTH_USER_STORAGE_KEY)
@@ -52,7 +53,25 @@ async function readJsonResponse(response: Response) {
 }
 
 async function fetchAuthJson(url: string, init?: RequestInit) {
-  const response = await fetch(url, init)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS)
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+    })
+  } catch (error) {
+    console.warn('Macode auth request failed:', error)
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('登录服务响应超时，请确认认证服务已启动并可访问')
+    }
+    throw new Error('登录服务不可达，请确认认证服务已启动并可访问')
+  } finally {
+    window.clearTimeout(timeout)
+  }
+
   const data = await readJsonResponse(response)
 
   if (!response.ok) {

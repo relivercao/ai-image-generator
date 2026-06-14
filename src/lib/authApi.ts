@@ -10,8 +10,10 @@ function normalizeAuthBaseUrl(value: string) {
   return trimmed || '/api'
 }
 
+const DEFAULT_AUTH_API_BASE_URL = import.meta.env.DEV ? 'http://127.0.0.1:3004/api' : '/api'
+
 export const AUTH_API_BASE_URL = normalizeAuthBaseUrl(
-  import.meta.env.VITE_AUTH_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || '/api',
+  import.meta.env.VITE_AUTH_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || DEFAULT_AUTH_API_BASE_URL,
 )
 
 export const AUTH_ENDPOINTS = {

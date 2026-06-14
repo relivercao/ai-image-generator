@@ -16,7 +16,7 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 12 }, settings).n).toBe(10)
   })
 
-  it('limits fal.ai output count to 4', () => {
+  it('limits macode queue output count to 4', () => {
     const falProfile = createDefaultFalProfile({ apiKey: 'fal-key' })
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
@@ -39,7 +39,7 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 4 }, settings).n).toBe(4)
   })
 
-  it('only replaces fal.ai auto size in text-to-image mode', () => {
+  it('only replaces macode queue auto size in text-to-image mode', () => {
     const falProfile = createDefaultFalProfile({ apiKey: 'fal-key' })
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
