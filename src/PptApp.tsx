@@ -53,11 +53,13 @@ interface NormalizedSlideImage {
 
 interface SlideGenerationResult extends NormalizedSlideImage {
   extraImageCount: number
+  failedRequestCount?: number
 }
 
-const MAX_SLIDE_RETRIES = 3
+const MAX_SLIDE_RETRIES = 5
 const MAX_SLIDE_ATTEMPTS = MAX_SLIDE_RETRIES + 1
-const PPT_PARTIAL_FINALIZE_GRACE_MS = 45_000
+const PPT_PARTIAL_FINALIZE_GRACE_MS = 30_000
+const PPT_RESCUE_CONCURRENCY = 1
 const GORDEN_EXPORT_TIMEOUT_SECONDS = 600
 
 const STYLE_PRESETS = [
@@ -411,6 +413,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     )
     let successCount = 0
     let failCount = 0
+    const failedItems: Array<{ plan: PptSlidePlan; slideIndex: number }> = []
 
     await runWithConcurrency(items, requestedConcurrency, async ({ plan: slidePlan, slideIndex }) => {
       try {
@@ -421,6 +424,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       } catch (err) {
         if (runIdRef.current !== runId) return
         failCount += 1
+        failedItems.push({ plan: slidePlan, slideIndex })
         const error = getErrorMessage(err)
         setSlides((current) => current.map((item, i) =>
           i === slideIndex && item.status !== 'done'
@@ -430,7 +434,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       }
     }, () => runIdRef.current === runId)
 
-    return { successCount, failCount }
+    return { successCount, failCount, failedItems }
   }
 
   const assignGeneratedImage = (slideIndex: number, result: SlideGenerationResult) => {
@@ -495,19 +499,19 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       slideControllersRef.current.set(slideIndex, controller)
       setSlides((current) => current.map((item, i) => i === slideIndex ? { ...item, status: 'running', error: undefined, attempt, startedAt: Date.now(), finishedAt: undefined } : item))
       let partialFallbackTimer: number | undefined
+      const partialCache: { latest: NormalizedSlideImage | null } = { latest: null }
+      let partialAccepted = false
 
       try {
-        let partialAccepted = false
-        let latestPartial: NormalizedSlideImage | null = null
         let resolvePartialFallback: ((result: NormalizedSlideImage) => void) | null = null
         const partialFallback = new Promise<NormalizedSlideImage>((resolve) => {
           resolvePartialFallback = resolve
         })
         const schedulePartialFallback = (partialResult: NormalizedSlideImage) => {
-          latestPartial = partialResult
+          partialCache.latest = partialResult
           if (partialFallbackTimer) window.clearTimeout(partialFallbackTimer)
           partialFallbackTimer = window.setTimeout(() => {
-            if (latestPartial) resolvePartialFallback?.(latestPartial)
+            if (partialCache.latest) resolvePartialFallback?.(partialCache.latest)
           }, PPT_PARTIAL_FINALIZE_GRACE_MS)
         }
 
@@ -561,13 +565,20 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
         const result = settled.result
         if (!result) return null
-        const normalizedImages = await Promise.all(
+        const normalizedImageResults = await Promise.allSettled(
           result.images
             .filter(Boolean)
             .map((item) => normalizeSlideImageForDisplay(item, pptProfile, fallbackMime, controller.signal)),
         )
+        const normalizedImages = normalizedImageResults
+          .filter((item): item is PromiseFulfilledResult<NormalizedSlideImage> => item.status === 'fulfilled')
+          .map((item) => item.value)
         const image = normalizedImages[0]
-        if (!image) throw new Error('API 没有返回图片')
+        const failedNormalizations = normalizedImageResults.length - normalizedImages.length
+        if (!image) {
+          const firstFailure = normalizedImageResults.find((item): item is PromiseRejectedResult => item.status === 'rejected')
+          throw new Error(firstFailure ? `API 返回图片但浏览器处理失败：${getPlainErrorMessage(firstFailure.reason)}` : 'API 没有返回图片')
+        }
         if (isDataUrl(image.image)) {
           try {
             await assertGeneratedSlideLooksUsable(image.image, { allowDarkCanvas: isDarkStylePreset(style) })
@@ -576,13 +587,40 @@ export default function PptApp({ embedded = false }: PptAppProps) {
           }
         }
         if (runIdRef.current !== runId) return null
-        return { ...image, extraImageCount: Math.max(0, normalizedImages.length - 1) }
+        const failedRequests = Array.isArray(result.failedRequests) ? result.failedRequests.length : 0
+        return {
+          ...image,
+          warning: [
+            image.warning,
+            failedRequests ? `${failedRequests} 个并发请求失败，已使用成功返回的图片` : '',
+            failedNormalizations ? `${failedNormalizations} 张返回图处理失败，已使用可用图片` : '',
+          ].filter(Boolean).join('；') || undefined,
+          extraImageCount: Math.max(0, normalizedImages.length - 1),
+          failedRequestCount: failedRequests + failedNormalizations,
+        }
       } catch (err) {
         if (runIdRef.current !== runId) return null
         lastError = getErrorMessage(err)
+        const rescuedPartial = partialCache.latest
+        if (rescuedPartial && !controller.signal.aborted) {
+          partialAccepted = true
+          if (partialFallbackTimer) window.clearTimeout(partialFallbackTimer)
+          if (isDataUrl(rescuedPartial.image)) {
+            try {
+              await assertGeneratedSlideLooksUsable(rescuedPartial.image, { allowDarkCanvas: isDarkStylePreset(style) })
+            } catch (inspectionError) {
+              console.warn('PPT slide rescued partial image inspection warning:', inspectionError)
+            }
+          }
+          return {
+            ...rescuedPartial,
+            warning: [rescuedPartial.warning, `最终响应失败，已保留流式预览图：${lastError}`].filter(Boolean).join('；'),
+            extraImageCount: 0,
+          }
+        }
         if (attempt >= MAX_SLIDE_ATTEMPTS) break
 
-        const waitMs = 1200 * attempt
+        const waitMs = Math.min(10_000, 1500 * attempt + Math.round(Math.random() * 700))
         setSlides((current) => current.map((item, i) => i === slideIndex ? { ...item, status: 'running', error: `${lastError}，${Math.round(waitMs / 1000)} 秒后重试`, attempt } : item))
         await delay(waitMs)
       } finally {
@@ -605,7 +643,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     setMessage('')
     const requestedConcurrency = clampPptConcurrency(concurrency)
     setConcurrency(requestedConcurrency)
-    setMessage(`正在生成，最多 ${requestedConcurrency} 页同时进行；每页失败最多自动重试 ${MAX_SLIDE_RETRIES} 次`)
+    setMessage(`正在生成，最多 ${requestedConcurrency} 页同时进行；每页失败最多自动重试 ${MAX_SLIDE_RETRIES} 次，失败页会自动低并发补救`)
 
     const plan = buildPptPromptPlan({
       topic,
@@ -617,13 +655,27 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     })
     setSlides(plan.map((item) => ({ plan: item, status: 'pending' })))
 
-    const { successCount, failCount } = await runSlideBatch(
+    const firstPass = await runSlideBatch(
       plan.map((item, slideIndex) => ({ plan: item, slideIndex })),
       nextRunId,
       requestedConcurrency,
     )
 
     if (runIdRef.current === nextRunId) {
+      let successCount = firstPass.successCount
+      let failCount = firstPass.failCount
+      if (firstPass.failedItems.length > 0) {
+        setMessage(`正在低并发补救 ${firstPass.failedItems.length} 个失败页，避免远端限流/抖动继续影响生成`)
+        setSlides((current) => current.map((slide, index) =>
+          firstPass.failedItems.some((item) => item.slideIndex === index)
+            ? { ...slide, status: 'pending', error: undefined, attempt: undefined, startedAt: undefined, finishedAt: undefined }
+            : slide,
+        ))
+        const rescuePass = await runSlideBatch(firstPass.failedItems, nextRunId, PPT_RESCUE_CONCURRENCY)
+        if (runIdRef.current !== nextRunId) return
+        successCount += rescuePass.successCount
+        failCount = rescuePass.failCount
+      }
       setRunning(false)
       setMessage(failCount > 0 ? `生成完成：成功 ${successCount} 页，失败 ${failCount} 页` : `生成完成：${successCount} 页`)
     }
