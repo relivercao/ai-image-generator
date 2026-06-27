@@ -65,9 +65,9 @@ async function fetchAuthJson(url: string, init?: RequestInit) {
   } catch (error) {
     console.warn('Macode auth request failed:', error)
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('登录服务响应超时，请确认认证服务已启动并可访问')
+      throw new Error('登录服务响应超时。请确认已用 npm run dev 启动前端和认证桥，或单独运行 npm run auth:dev')
     }
-    throw new Error('登录服务不可达，请确认认证服务已启动并可访问')
+    throw new Error('登录服务不可达。请确认已用 npm run dev 启动前端和认证桥，或单独运行 npm run auth:dev')
   } finally {
     window.clearTimeout(timeout)
   }

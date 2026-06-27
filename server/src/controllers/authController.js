@@ -1,4 +1,4 @@
-import bcrypt from 'bcrypt'
+import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import pool from '../config/database.js'
 import { getJwtExpiresIn, getJwtSecret } from '../config/auth.js'

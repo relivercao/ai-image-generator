@@ -30,7 +30,7 @@ export interface GordenSkillSourceSlide {
 
 export interface GordenSkillProgress {
   slideIndex?: number
-  stage: 'stage-a' | 'background' | 'frame' | 'icons' | 'text' | 'compose' | 'package'
+  stage: 'stage-a' | 'background' | 'frame' | 'icons' | 'text' | 'fallback' | 'compose' | 'package'
   message: string
 }
 
@@ -733,8 +733,19 @@ function createSolidLayerDataUrl(width: number, height: number, color: string): 
   return canvas.toDataURL('image/png')
 }
 
+function createTransparentLayerDataUrl(width: number, height: number): string {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  return canvas.toDataURL('image/png')
+}
+
 function toLayerSource(dataUrl: string, fallbackReason?: string): string {
   return `${fallbackReason ? 'fallback' : 'browser-imagegen'}:${hashString(dataUrl)}`
+}
+
+function appendFallbackReason(current: string | undefined, next: string): string {
+  return current ? `${current}; ${next}` : next
 }
 
 async function convertSlide(opts: {
@@ -766,8 +777,8 @@ async function convertSlide(opts: {
   } catch (err) {
     assertNotAborted(signal)
     backgroundFallbackReason = getErrorMessage(err)
-    onProgress?.({ slideIndex: item.plan.index, stage: 'background', message: `B2 ${slideNo}: using source image fallback background` })
-    backgroundRaw = item.sourceImage
+    onProgress?.({ slideIndex: item.plan.index, stage: 'background', message: `B2 ${slideNo}: using editable neutral fallback background` })
+    backgroundRaw = createSolidLayerDataUrl(item.width, item.height, '#f6f8fc')
   }
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: generating framework layer` })
@@ -786,7 +797,16 @@ async function convertSlide(opts: {
     onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: using empty framework fallback` })
     frameRaw = createSolidLayerDataUrl(item.width, item.height, item.keyColor)
   }
-  const frameImage = await chromaKeyDataUrl(frameRaw, item.keyColor)
+  let frameImage: string
+  try {
+    frameImage = await chromaKeyDataUrl(frameRaw, item.keyColor)
+  } catch (err) {
+    assertNotAborted(signal)
+    frameFallbackReason = appendFallbackReason(frameFallbackReason, getErrorMessage(err))
+    onProgress?.({ slideIndex: item.plan.index, stage: 'frame', message: `B3 ${slideNo}: framework layer failed, using transparent fallback` })
+    frameRaw = createTransparentLayerDataUrl(item.width, item.height)
+    frameImage = frameRaw
+  }
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: generating icon/decor layer` })
   let iconsFallbackReason: string | undefined
@@ -804,8 +824,19 @@ async function convertSlide(opts: {
     onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: using empty icon fallback` })
     iconsRaw = createSolidLayerDataUrl(item.width, item.height, item.keyColor)
   }
-  const iconsImage = await chromaKeyDataUrl(iconsRaw, item.keyColor)
-  const icons = await sliceTransparentLayer(iconsImage)
+  let iconsImage: string
+  let icons: GordenSkillIconLayer[]
+  try {
+    iconsImage = await chromaKeyDataUrl(iconsRaw, item.keyColor)
+    icons = await sliceTransparentLayer(iconsImage)
+  } catch (err) {
+    assertNotAborted(signal)
+    iconsFallbackReason = appendFallbackReason(iconsFallbackReason, getErrorMessage(err))
+    onProgress?.({ slideIndex: item.plan.index, stage: 'icons', message: `B4 ${slideNo}: icon layer failed, using transparent fallback` })
+    iconsRaw = createTransparentLayerDataUrl(item.width, item.height)
+    iconsImage = iconsRaw
+    icons = []
+  }
 
   onProgress?.({ slideIndex: item.plan.index, stage: 'text', message: `B7 ${slideNo}: extracting editable text boxes` })
   let textFallbackReason: string | undefined
@@ -922,6 +953,103 @@ async function convertSlide(opts: {
       icons,
       texts,
       notes: item.plan.content,
+    },
+  }
+}
+
+function createFallbackConvertedSlide(item: PreparedSlide, profile: ApiProfile, reason: string): ConvertedSlide {
+  const slideNo = padSlide(item.plan.index)
+  const backend = `${getBackendLabel(profile)}:fallback`
+  const backgroundPrompt = buildLayerPrompt('background', item.plan, item.keyColor)
+  const framePrompt = buildLayerPrompt('frame', item.plan, item.keyColor)
+  const iconsPrompt = buildLayerPrompt('icons', item.plan, item.keyColor)
+  const textPrompt = buildTextPrompt(item.plan)
+  const backgroundRaw = createSolidLayerDataUrl(item.width, item.height, '#f6f8fc')
+  const frameRaw = createTransparentLayerDataUrl(item.width, item.height)
+  const iconsRaw = createTransparentLayerDataUrl(item.width, item.height)
+  const texts = buildFallbackTextBoxes(item.plan)
+
+  const layout = {
+    slide_width_in: 13.333,
+    slide_height_in: 7.5,
+    units: 'fraction',
+    ref_width: item.width,
+    ref_height: item.height,
+    assets_dir: '.',
+    background: 'background.png',
+    frame: 'frame.png',
+    icons: [{ file: 'icons.png', x: 0, y: 0, w: 1, h: 1, role: 'icons_layer' }],
+    texts: texts.map(toLayoutText),
+    fallback_reasons: {
+      conversion: reason,
+    },
+  }
+
+  const assetManifest = {
+    schema: 'gorden-image2pptx-assets/v1',
+    slide: item.plan.index,
+    source_slide: `slides/${slideNo}.png`,
+    key_color: item.keyColor,
+    fallback_reason: reason,
+    assets: [
+      {
+        layer: 'background',
+        backend,
+        prompt_file: `editable/${slideNo}/prompts/background.md`,
+        generated_source: toLayerSource(backgroundRaw, reason),
+        copied_to: `editable/${slideNo}/background.png`,
+        fallback_reason: reason,
+      },
+      {
+        layer: 'frame',
+        backend,
+        prompt_file: `editable/${slideNo}/prompts/frame.md`,
+        generated_source: toLayerSource(frameRaw, reason),
+        copied_to: `editable/${slideNo}/frame.png`,
+        fallback_reason: reason,
+      },
+      {
+        layer: 'icons',
+        backend,
+        prompt_file: `editable/${slideNo}/prompts/icons.md`,
+        generated_source: toLayerSource(iconsRaw, reason),
+        copied_to: `editable/${slideNo}/icons.png`,
+        fallback_reason: reason,
+      },
+    ],
+    text_extraction: {
+      backend,
+      prompt_file: `editable/${slideNo}/prompts/text.md`,
+      boxes: texts.length,
+      fallback_reason: reason,
+    },
+  }
+
+  return {
+    sourceImage: item.sourceImage,
+    keyColor: item.keyColor,
+    backgroundRaw,
+    frameRaw,
+    iconsRaw,
+    prompts: {
+      slide: item.plan.prompt,
+      background: backgroundPrompt,
+      frame: framePrompt,
+      icons: iconsPrompt,
+      text: textPrompt,
+    },
+    assetManifest,
+    layout,
+    layerSlide: {
+      index: item.plan.index,
+      title: item.plan.title,
+      sourceImage: item.sourceImage,
+      backgroundImage: backgroundRaw,
+      frameImage: frameRaw,
+      iconsImage: iconsRaw,
+      icons: [],
+      texts,
+      notes: `${item.plan.content}\n\nGorden fallback: ${reason}`.trim(),
     },
   }
 }
@@ -1113,14 +1241,25 @@ export async function runGordenSuperPptSkillFlow(opts: {
     prepared,
     conversionConcurrency,
     async (item) => {
-      const slide = await convertSlide({
-        item,
-        settings: opts.settings,
-        profile: opts.profile,
-        signal: opts.signal,
-        onProgress: opts.onProgress,
-      })
-      converted.push(slide)
+      try {
+        const slide = await convertSlide({
+          item,
+          settings: opts.settings,
+          profile: opts.profile,
+          signal: opts.signal,
+          onProgress: opts.onProgress,
+        })
+        converted.push(slide)
+      } catch (err) {
+        assertNotAborted(opts.signal)
+        const reason = getErrorMessage(err)
+        opts.onProgress?.({
+          slideIndex: item.plan.index,
+          stage: 'fallback',
+          message: `B-fallback ${padSlide(item.plan.index)}: slide conversion failed, using editable outline fallback`,
+        })
+        converted.push(createFallbackConvertedSlide(item, opts.profile, reason))
+      }
     },
     () => !opts.signal?.aborted,
   )

@@ -4,22 +4,23 @@
 
 ## 本地启动
 
-1. 启动认证桥接服务：
+1. 安装前端和认证桥依赖，并复制认证桥配置：
 
 ```bash
-cd server
 npm install
-cp .env.example .env
-npm run dev
+npm --prefix server install
+cp server/.env.example server/.env
 ```
 
-2. 启动前端：
+2. 启动本地开发服务：
 
 ```bash
 npm run dev
 ```
 
-本地开发默认会直连 `http://127.0.0.1:3004/api`。生产环境可以把 `VITE_AUTH_API_BASE_URL` 指向 `https://macode.cloud/api`，或在同域部署时保持 `/api`。
+`npm run dev` 会同时启动 Vite 前端和认证桥接服务。若已经单独运行认证桥，可用 `npm run dev:frontend` 只启动前端。
+
+本地开发默认通过 Vite 的 `/api` 代理转发到 `http://127.0.0.1:3004`。生产环境可以把 `VITE_AUTH_API_BASE_URL` 指向 `https://macode.cloud/api`，或在同域部署时保持 `/api`。
 
 后端既支持单独配置 `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`，也支持直接复用 New API 的 Go 风格 `SQL_DSN`：
 

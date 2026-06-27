@@ -301,8 +301,11 @@ services:
 
 ```bash
 npm install
+npm --prefix server install
 npm run dev
 ```
+
+`npm run dev` 会同时启动 Vite 前端和 macode/New API 登录桥。若已经单独运行登录桥，可使用 `npm run dev:frontend` 只启动前端。
 
 **2. 本地开发跨域代理 (可选)**
 

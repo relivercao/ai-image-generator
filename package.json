@@ -4,7 +4,8 @@
   "version": "0.6.4",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev-with-auth.mjs",
+    "dev:frontend": "vite",
     "auth:dev": "npm --prefix server run dev",
     "auth:start": "npm --prefix server start",
     "mock:api": "node scripts/mock-image-api.mjs",
