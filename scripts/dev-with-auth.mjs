@@ -1,13 +1,17 @@
 import { spawn } from 'node:child_process'
 
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const npmExecPath = process.env.npm_execpath
+const npm = npmExecPath ? process.execPath : process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const children = []
 let shuttingDown = false
 
 function start(name, args) {
-  const child = spawn(npm, args, {
+  const npmArgs = npmExecPath ? [npmExecPath, ...args] : args
+  const child = spawn(npm, npmArgs, {
     stdio: 'inherit',
     env: process.env,
+    shell: !npmExecPath && process.platform === 'win32',
+    windowsHide: true,
   })
   children.push({ name, child })
 
