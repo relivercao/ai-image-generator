@@ -1,7 +1,7 @@
 {
   "name": "gpt-image-playground",
   "private": true,
-  "version": "0.6.4",
+  "version": "0.6.10",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-with-auth.mjs",
