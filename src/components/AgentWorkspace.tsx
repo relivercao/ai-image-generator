@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentConversationTaskIds, getAgentRoundTaskIds, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
@@ -552,14 +552,7 @@ export default function AgentWorkspace() {
 
   const handleDeleteConversation = (id: string) => {
     const targetConversation = conversations.find((item) => item.id === id) ?? null
-    const roundIds = new Set(targetConversation?.rounds.map((round) => round.id) ?? [])
-    const roundTaskIds = targetConversation?.rounds.flatMap((round) => round.outputTaskIds) ?? []
-    const relatedTasks = tasks.filter((task) =>
-      task.agentConversationId === id || Boolean(task.agentRoundId && roundIds.has(task.agentRoundId)),
-    )
-    const existingTaskIds = new Set(tasks.map((task) => task.id))
-    const relatedTaskIds = Array.from(new Set([...roundTaskIds, ...relatedTasks.map((task) => task.id)]))
-      .filter((taskId) => existingTaskIds.has(taskId))
+    const relatedTaskIds = getAgentConversationTaskIds(targetConversation, tasks)
     const relatedTaskIdSet = new Set(relatedTaskIds)
     const generatedImageCount = new Set(
       tasks
@@ -577,8 +570,8 @@ export default function AgentWorkspace() {
           }
         : undefined,
       action: async (deleteGeneratedImages = false) => {
-        deleteConversation(id)
         if (deleteGeneratedImages && relatedTaskIds.length > 0) await removeMultipleTasks(relatedTaskIds)
+        deleteConversation(id)
       },
     })
   }
@@ -655,16 +648,15 @@ export default function AgentWorkspace() {
 
   const handleDeleteMessage = (message: AgentMessage, round: AgentRound) => {
     const isUserMessage = message.role === 'user'
-    const existingTaskIds = new Set(tasks.map((task) => task.id))
     const assistantTaskIds = isUserMessage
       ? []
       : Array.from(new Set([
           ...(message.outputTaskIds ?? []),
-          ...round.outputTaskIds,
+          ...getAgentRoundTaskIds(round, tasks),
           ...tasks
             .filter((task) => task.agentMessageId === message.id || task.agentRoundId === round.id)
             .map((task) => task.id),
-        ])).filter((taskId) => existingTaskIds.has(taskId))
+        ]))
     setConfirmDialog({
       title: isUserMessage ? '删除轮次' : '删除消息',
       message: isUserMessage
@@ -672,7 +664,8 @@ export default function AgentWorkspace() {
         : '确定要删除这条消息吗？这会同时删除这条回复生成的图片。',
       action: async () => {
         if (isUserMessage) {
-          if (round.outputTaskIds.length > 0) await removeMultipleTasks(round.outputTaskIds)
+          const roundTaskIds = getAgentRoundTaskIds(round, tasks)
+          if (roundTaskIds.length > 0) await removeMultipleTasks(roundTaskIds)
 
           useStore.setState((state) => {
             const targetConversationId = conversation?.id

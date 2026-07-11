@@ -2860,6 +2860,30 @@ export function deleteAgentRoundFromConversation(conversation: AgentConversation
   }
 }
 
+export function getAgentRoundTaskIds(round: AgentRound, tasks: TaskRecord[]) {
+  const existingTaskIds = new Set(tasks.map((task) => task.id))
+  return Array.from(new Set([
+    ...round.outputTaskIds,
+    ...tasks
+      .filter((task) => task.agentRoundId === round.id)
+      .map((task) => task.id),
+  ])).filter((taskId) => existingTaskIds.has(taskId))
+}
+
+export function getAgentConversationTaskIds(conversation: AgentConversation | null | undefined, tasks: TaskRecord[]) {
+  if (!conversation) return []
+  const roundIds = new Set(conversation.rounds.map((round) => round.id))
+  const roundTaskIds = conversation.rounds.flatMap((round) => getAgentRoundTaskIds(round, tasks))
+  const relatedTaskIds = tasks
+    .filter((task) =>
+      task.agentConversationId === conversation.id ||
+      Boolean(task.agentRoundId && roundIds.has(task.agentRoundId)),
+    )
+    .map((task) => task.id)
+
+  return Array.from(new Set([...roundTaskIds, ...relatedTaskIds]))
+}
+
 export function getAgentSiblingRounds(conversation: AgentConversation, round: AgentRound) {
   return getAgentRoundChildren(conversation, round.parentRoundId ?? null)
 }
