@@ -180,6 +180,18 @@ function getResponsesImageResultValues(result: unknown, initialImageContext = tr
   return Array.from(new Set(collect(result, '', initialImageContext)))
 }
 
+function getImageApiFallbackValues(payload: ImageApiResponse): string[] {
+  const values = getResponsesImageResultValues(payload, false)
+  const data = Array.isArray(payload.data) ? payload.data : []
+  for (const item of data) {
+    const b64 = typeof item.b64_json === 'string' ? item.b64_json.trim() : ''
+    const url = typeof item.url === 'string' ? item.url.trim() : ''
+    if (b64) values.push(b64)
+    if (url) values.push(url)
+  }
+  return Array.from(new Set(values))
+}
+
 async function normalizeImageValue(value: string, fallbackMime: string, signal?: AbortSignal, allowRawImageUrls = false): Promise<string> {
   if (isDataUrl(value)) return value
   if (isHttpUrl(value)) {
@@ -372,14 +384,35 @@ async function parseResponsesImageResults(payload: ResponsesApiResponse, fallbac
 
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal, allowRawImageUrls = false): Promise<CallApiResult> {
   const data = payload.data
+  const actualParams = mergeActualParams(
+    pickActualParams(payload),
+  )
+
+  const buildFallbackResult = async (): Promise<CallApiResult | null> => {
+    const fallbackValues = getImageApiFallbackValues(payload)
+    if (!fallbackValues.length) return null
+
+    const images = await Promise.all(fallbackValues.map((value) => normalizeImageValue(value, mime, signal, allowRawImageUrls)))
+    const rawImageUrls = fallbackValues.filter(isHttpUrl)
+    return {
+      images,
+      actualParams,
+      actualParamsList: images.map(() => actualParams),
+      ...(rawImageUrls.length ? { rawImageUrls } : {}),
+    }
+  }
+
   if (!Array.isArray(data) || !data.length) {
+    const fallbackResult = await buildFallbackResult()
+    if (fallbackResult) return fallbackResult
+
     const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
     ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
 
   const images: string[] = []
-  const rawImageUrls = data.map((item) => item.url).filter(isHttpUrl)
+  const rawImageUrls = getImageApiFallbackValues(payload).filter(isHttpUrl)
   const revisedPrompts: Array<string | undefined> = []
   try {
     for (const item of data) {
@@ -403,14 +436,14 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   }
 
   if (!images.length) {
+    const fallbackResult = await buildFallbackResult()
+    if (fallbackResult) return fallbackResult
+
     const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
     ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
 
-  const actualParams = mergeActualParams(
-    pickActualParams(payload),
-  )
   return {
     images,
     actualParams,

@@ -184,6 +184,37 @@ describe('callImageApi', () => {
     expect(result.images).toEqual(['https://macode.cloud/v1/files/slide-1.png'])
   })
 
+  it('parses nested Images API payloads returned by compatible gateways', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'img_123',
+      output_format: 'png',
+      data: [{
+        result: {
+          images: [
+            { base64: 'aW1hZ2UtMQ==' },
+            { b64_json: 'aW1hZ2UtMg==' },
+          ],
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toEqual([
+      'data:image/png;base64,aW1hZ2UtMQ==',
+      'data:image/png;base64,aW1hZ2UtMg==',
+    ])
+    expect(result.actualParams).toEqual({ output_format: 'png' })
+  })
+
   it('records actual params returned on Images API responses in Codex CLI mode', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output_format: 'png',
