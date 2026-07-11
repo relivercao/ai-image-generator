@@ -10,8 +10,14 @@ function normalizeAuthBaseUrl(value: string) {
   return trimmed || '/api'
 }
 
+function getDefaultAuthBaseUrl() {
+  const baseUrl = typeof import.meta.env.BASE_URL === 'string' ? import.meta.env.BASE_URL : '/'
+  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+  return normalizedBaseUrl ? `${normalizedBaseUrl}/api` : '/api'
+}
+
 export const AUTH_API_BASE_URL = normalizeAuthBaseUrl(
-  import.meta.env.VITE_AUTH_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || '/api',
+  import.meta.env.VITE_AUTH_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || getDefaultAuthBaseUrl(),
 )
 
 export const AUTH_ENDPOINTS = {
