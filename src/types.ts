@@ -182,6 +182,10 @@ export interface TaskRecord {
   customTaskId?: string
   /** 自定义异步任务是否等待自动恢复 */
   customRecoverable?: boolean
+  /** 本站服务端生成任务记录 ID，用于归档和刷新恢复。 */
+  serverJobId?: string
+  /** 已由本站归档的图片数量。 */
+  archivedImageCount?: number
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */
@@ -206,6 +210,8 @@ export interface TaskRecord {
   streamPartialImageIds?: string[]
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
+  /** 结果已生成但归档、数量或后处理存在非致命问题。 */
+  resultWarnings?: string[]
   /** 发生解析错误时的原始响应 JSON */
   rawResponsePayload?: string
   status: TaskStatus

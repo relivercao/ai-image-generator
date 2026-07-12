@@ -91,7 +91,7 @@ function readFalImageSize(value: unknown): Partial<TaskParams> | undefined {
   return { size: `${Math.round(width)}x${Math.round(height)}` }
 }
 
-async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<Array<{
+async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, customBaseUrlLabel: string | null, signal?: AbortSignal, allowRawImageUrls = false): Promise<Array<{
   image: string
   actualParams?: Partial<TaskParams>
   rawImageUrl?: string
@@ -109,7 +109,7 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
       if (!value) continue
       if (isHttpUrl(value)) rawImageUrls.push(value)
       results.push({
-        image: isHttpUrl(value) ? await fetchImageUrlAsDataUrl(value, fallbackMime, signal) : value,
+        image: isHttpUrl(value) && !allowRawImageUrls ? await fetchImageUrlAsDataUrl(value, fallbackMime, signal) : value,
         actualParams: readFalImageSize(candidate),
         rawImageUrl: isHttpUrl(value) ? value : undefined,
       })
@@ -135,9 +135,9 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
   return results
 }
 
-async function parseFalResult(payload: FalApiResponse, params: TaskParams, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<CallApiResult> {
+async function parseFalResult(payload: FalApiResponse, params: TaskParams, customBaseUrlLabel: string | null, signal?: AbortSignal, allowRawImageUrls = false): Promise<CallApiResult> {
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  const imageResults = await parseFalImageResults(payload, mime, customBaseUrlLabel, signal)
+  const imageResults = await parseFalImageResults(payload, mime, customBaseUrlLabel, signal, allowRawImageUrls)
   const actualParams = mergeActualParams(imageResults[0]?.actualParams)
   const rawImageUrls = imageResults.map((r) => r.rawImageUrl).filter((u): u is string => Boolean(u))
   return {
@@ -189,7 +189,7 @@ export async function getFalQueuedImageResult(
   configureFal(profile)
   await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
   const result = await fal.queue.result(endpoint, { requestId })
-  return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile))
+  return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile), undefined, true)
 }
 
 export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
@@ -218,7 +218,7 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
     })
     const payload = result.data as FalApiResponse
     opts.onFalRequestEnqueued?.({ requestId: result.requestId, endpoint })
-    return parseFalResult(payload, opts.params, getFalCustomBaseUrlLabel(profile))
+    return parseFalResult(payload, opts.params, getFalCustomBaseUrlLabel(profile), opts.signal, opts.allowRawImageUrls)
   } catch (err) {
     const falMessage = getFalErrorMessage(err)
     if (falMessage) throw new Error(falMessage)

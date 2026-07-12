@@ -44,6 +44,14 @@ export interface GordenSuperPptSkillResult {
   artifactZipBlob: Blob
   imageDeckSlides: ImageSlide[]
   editableSlides: GordenSkillLayerSlide[]
+  qaReport: GordenQaReport
+}
+
+export interface GordenQaReport {
+  passed: boolean
+  slideCount: number
+  fallbackSlideCount: number
+  warnings: string[]
 }
 
 interface PreparedSlide {
@@ -124,8 +132,27 @@ export function downloadGordenSuperPptSkillResult(result: GordenSuperPptSkillRes
   window.setTimeout(() => triggerDownload(result.artifactZipBlob, result.artifactZipFileName), 300)
 }
 
-async function pptxToBlob(pptx: ReturnType<typeof createImageSlidesPptx> | ReturnType<typeof createGordenSkillEditablePptx>): Promise<Blob> {
-  const output = await (pptx as any).write({ outputType: 'blob', compression: true })
+async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined, label: string): Promise<T> {
+  assertNotAborted(signal)
+  if (!signal) return promise
+  let onAbort: (() => void) | undefined
+  const abortPromise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error(`${label} aborted`))
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([promise, abortPromise])
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
+async function pptxToBlob(pptx: ReturnType<typeof createImageSlidesPptx> | ReturnType<typeof createGordenSkillEditablePptx>, signal?: AbortSignal): Promise<Blob> {
+  const output = await raceWithSignal(
+    (pptx as any).write({ outputType: 'blob', compression: true }),
+    signal,
+    'PPTX serialization',
+  )
   if (output instanceof Blob) return output
   if (output instanceof ArrayBuffer) {
     return new Blob([output], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
@@ -1093,6 +1120,7 @@ async function buildArtifactZip(opts: {
   imageDeckFileName: string
   editableFileName: string
   topic: string
+  qaReport: GordenQaReport
 }) {
   const files: Record<string, Uint8Array | [Uint8Array, { mtime: Date }]> = {}
   const backendBySlide = opts.converted.reduce<Record<number, string>>((map, slide) => {
@@ -1111,6 +1139,7 @@ async function buildArtifactZip(opts: {
       visual_generation_prompt: item.plan.prompt,
     })),
   })
+  addJson(files, 'qa-report.json', opts.qaReport)
 
   addJson(files, 'imagegen-manifest.json', {
     schema: 'gorden-image-pptgen/v1',
@@ -1205,6 +1234,32 @@ async function buildArtifactZip(opts: {
   return new Blob([buffer], { type: 'application/zip' })
 }
 
+function buildQaReport(prepared: PreparedSlide[], converted: ConvertedSlide[]): GordenQaReport {
+  const warnings: string[] = []
+  const expectedIndexes = prepared.map((item) => item.plan.index)
+  const actualIndexes = converted.map((item) => item.layerSlide.index)
+  if (new Set(actualIndexes).size !== actualIndexes.length) throw new Error('QA failed: duplicate slide indexes')
+  if (expectedIndexes.some((index) => !actualIndexes.includes(index))) throw new Error('QA failed: editable PPTX is missing slides')
+
+  let fallbackSlideCount = 0
+  for (const item of converted) {
+    const slide = item.layerSlide
+    if (!isDataUrl(slide.backgroundImage)) throw new Error(`QA failed: slide ${slide.index} has no valid background layer`)
+    if (!slide.texts.length || slide.texts.some((text) => !text.text.trim())) {
+      throw new Error(`QA failed: slide ${slide.index} has no editable text`)
+    }
+    const layout = item.layout as { fallback_reasons?: Record<string, string> }
+    if (layout.fallback_reasons && Object.keys(layout.fallback_reasons).length > 0) fallbackSlideCount += 1
+  }
+  if (fallbackSlideCount > 0) warnings.push(`${fallbackSlideCount} slides used one or more editable fallback layers`)
+  return {
+    passed: true,
+    slideCount: converted.length,
+    fallbackSlideCount,
+    warnings,
+  }
+}
+
 export async function runGordenSuperPptSkillFlow(opts: {
   topic: string
   baseName: string
@@ -1263,12 +1318,20 @@ export async function runGordenSuperPptSkillFlow(opts: {
     },
     () => !opts.signal?.aborted,
   )
+  assertNotAborted(opts.signal)
+  if (converted.length !== prepared.length) {
+    throw new Error(`Conversion stopped before all slides completed (${converted.length}/${prepared.length})`)
+  }
   converted.sort((a, b) => a.layerSlide.index - b.layerSlide.index)
 
+  opts.onProgress?.({ stage: 'compose', message: 'QA: validating slide count, layers, and editable text' })
+  const qaReport = buildQaReport(prepared, converted)
+
   opts.onProgress?.({ stage: 'compose', message: 'B8: composing image deck and editable PPTX' })
-  const imageDeckBlob = await pptxToBlob(createImageSlidesPptx(imageDeckSlides, opts.topic))
+  const imageDeckBlob = await pptxToBlob(createImageSlidesPptx(imageDeckSlides, opts.topic), opts.signal)
   const editableSlides = converted.map((item) => item.layerSlide)
-  const editableBlob = await pptxToBlob(createGordenSkillEditablePptx(editableSlides, opts.topic))
+  const editableBlob = await pptxToBlob(createGordenSkillEditablePptx(editableSlides, opts.topic), opts.signal)
+  assertNotAborted(opts.signal)
 
   opts.onProgress?.({ stage: 'package', message: 'Packaging manifests, prompts, layers, and PPTX files' })
   const artifactZipBlob = await buildArtifactZip({
@@ -1280,6 +1343,7 @@ export async function runGordenSuperPptSkillFlow(opts: {
     imageDeckFileName,
     editableFileName,
     topic: opts.topic,
+    qaReport,
   })
 
   return {
@@ -1292,5 +1356,6 @@ export async function runGordenSuperPptSkillFlow(opts: {
     artifactZipBlob,
     imageDeckSlides,
     editableSlides,
+    qaReport,
   }
 }

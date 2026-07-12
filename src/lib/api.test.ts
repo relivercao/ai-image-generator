@@ -79,6 +79,28 @@ describe('callImageApi', () => {
     expect(body.prompt).toBe('prompt')
   })
 
+  it('sends a stable idempotency key for generation retries', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+      requestId: 'gallery-task-1',
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const headers = new Headers((init as RequestInit).headers)
+    expect(headers.get('Idempotency-Key')).toBe('gallery-task-1')
+    expect(headers.get('X-Request-Id')).toBe('gallery-task-1')
+  })
+
   it('parses multiple Responses images packed in one image_generation_call result', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{

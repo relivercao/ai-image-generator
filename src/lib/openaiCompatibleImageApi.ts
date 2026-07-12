@@ -83,9 +83,10 @@ function normalizeImageApiPayload(value: unknown): ImageApiResponse {
   return { data: [] }
 }
 
-function createRequestHeaders(profile: ApiProfile): Record<string, string> {
+function createRequestHeaders(profile: ApiProfile, requestId?: string): Record<string, string> {
   return {
     Authorization: `Bearer ${profile.apiKey}`,
+    ...(requestId ? { 'Idempotency-Key': requestId, 'X-Request-Id': requestId } : {}),
   }
 }
 
@@ -621,6 +622,7 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   const results = await Promise.allSettled(
     Array.from({ length: n }).map((_, requestIndex) => callImagesApiSingle({
       ...singleOpts,
+      requestId: opts.requestId ? `${opts.requestId}:${requestIndex}` : undefined,
       onPartialImage: opts.onPartialImage
         ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
         : undefined,
@@ -672,7 +674,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.requestId)
   const paths = createOpenAICompatiblePaths()
 
   const { controller, cleanup } = createLinkedAbortController(profile.timeout, opts.signal)
@@ -919,7 +921,7 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
   return formData
 }
 
-async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
+async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal, allowRawImageUrls = false): Promise<CallApiResult> {
   const images: string[] = []
   const imageUrls = (result.imageUrlPaths ?? []).flatMap((path) =>
     getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
@@ -932,7 +934,7 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
       }
     }
     for (const url of imageUrls) {
-      images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+      images.push(await normalizeImageValue(url, mime, signal, allowRawImageUrls))
     }
   } catch (err) {
     if (rawImageUrls.length > 0 && err instanceof Error) {
@@ -950,7 +952,7 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
 }
 
 async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: CallApiOptions, profile: ApiProfile, controller: AbortController, proxyConfig: ReturnType<typeof readClientDevProxyConfig>, useApiProxy: boolean): Promise<unknown> {
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.requestId)
   const context = createCustomProviderContext(opts, profile)
   const method = mapping.method ?? 'POST'
   const contentType = mapping.contentType ?? 'json'
@@ -997,6 +999,7 @@ async function pollCustomTaskResult(
   taskId: string,
   mime: string,
   signal?: AbortSignal,
+  allowRawImageUrls = false,
 ): Promise<CallApiResult> {
   const proxyConfig = readClientDevProxyConfig()
   const requestHeaders = createRequestHeaders(profile)
@@ -1039,7 +1042,7 @@ async function pollCustomTaskResult(
     }
     if (state === 'success') {
       try {
-        return await extractCustomImages(taskPayload, poll.result, mime, signal)
+        return await extractCustomImages(taskPayload, poll.result, mime, signal, allowRawImageUrls)
       } catch (err) {
         if (!signal?.aborted && isRecoverablePollingError(err)) continue
         throw err
@@ -1056,7 +1059,7 @@ export async function getCustomQueuedImageResult(
 ): Promise<CallApiResult> {
   if (!customProvider.poll) throw new Error('自定义异步任务缺少 poll 配置')
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  return pollCustomTaskResult(profile, customProvider.poll, taskId, mime)
+  return pollCustomTaskResult(profile, customProvider.poll, taskId, mime, undefined, true)
 }
 
 async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider: CustomProviderDefinition): Promise<CallApiResult> {
@@ -1084,14 +1087,14 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
       ;(err as any).rawResponsePayload = JSON.stringify(submitPayload, null, 2)
       throw err
     }
-    if (!taskId) return extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
+    if (!taskId) return extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal, opts.allowRawImageUrls)
     if (!customProvider.poll) throw new Error('异步接口返回了 task_id，但服务商配置缺少 poll')
     opts.onCustomTaskEnqueued?.({ taskId })
     if (submitTimeoutActive) {
       cleanup()
       submitTimeoutActive = false
     }
-    return pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal)
+    return pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal, opts.allowRawImageUrls)
   } finally {
     if (submitTimeoutActive) cleanup()
   }
@@ -1105,6 +1108,7 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
 
   const promises = Array.from({ length: n }).map((_, requestIndex) => callResponsesImageApiSingle({
     ...opts,
+    requestId: opts.requestId ? `${opts.requestId}:${requestIndex}` : undefined,
     onPartialImage: opts.onPartialImage
       ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
       : undefined,
@@ -1152,7 +1156,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.requestId)
   const { controller, cleanup } = createLinkedAbortController(profile.timeout, opts.signal)
 
   try {

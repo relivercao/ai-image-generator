@@ -17,6 +17,8 @@ import ButtonTooltip from './input/buttonTooltip'
 import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
 import InputParamsPanel from './input/inputParamsPanel'
+import GalleryPromptPresets from './input/GalleryPromptPresets'
+
 
 
 function getMentionTagTextLength(el: Element) {
@@ -893,6 +895,25 @@ export default function InputBar() {
       }
     }, 0)
   }, [prompt, setPrompt, syncPromptFromContentEditable])
+
+
+  const replacePromptWithTemplate = useCallback((nextPrompt: string) => {
+    isUserInputRef.current = false
+    setPrompt(nextPrompt)
+    window.setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        setContentEditableCursor(textareaRef.current, nextPrompt.length)
+      }
+    }, 0)
+  }, [setPrompt])
+
+  const appendStyleToPrompt = useCallback((styleText: string) => {
+    const trimmedPrompt = prompt.trim()
+    const separator = trimmedPrompt ? (/[。！？!?；;，,、\s]$/.test(trimmedPrompt) ? '' : '，') : ''
+    const nextPrompt = `${trimmedPrompt}${separator}${styleText}风格`
+    replacePromptWithTemplate(nextPrompt)
+  }, [prompt, replacePromptWithTemplate])
 
   const handleClearPrompt = useCallback(() => {
     isUserInputRef.current = false
@@ -1995,6 +2016,14 @@ export default function InputBar() {
             ) : (
               renderImageThumbs()
             )
+          )}
+
+
+          {appMode === 'gallery' && (
+            <GalleryPromptPresets
+              onApplyPrompt={replacePromptWithTemplate}
+              onAppendStyle={appendStyleToPrompt}
+            />
           )}
 
           {/* 输入框 */}

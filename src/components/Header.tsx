@@ -170,7 +170,7 @@ export default function Header() {
                     rel="noopener noreferrer"
                     className="hidden text-lg font-bold tracking-tight text-gray-800 transition-colors hover:text-gray-600 dark:text-gray-100 dark:hover:text-gray-300 sm:inline"
                   >
-                    GPT Image Playground
+                    Macode-Image
                   </a>
                 </>
               ) : (
@@ -180,7 +180,7 @@ export default function Header() {
                   rel="noopener noreferrer"
                   className="text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                 >
-                  GPT Image Playground
+                  Macode-Image
                 </a>
               )}
               {hasUpdate && latestRelease && (

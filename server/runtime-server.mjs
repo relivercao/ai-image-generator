@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..', 'dist')
 const app = express()
 const host = process.env.HOST || '127.0.0.1'
 const port = Number(process.env.PORT || 8080)
-const apiProxyUrl = process.env.API_PROXY_URL || 'https://macode.cloud/v1'
+const apiProxyUrl = process.env.API_PROXY_URL || 'https://www.macode.cloud/v1'
 const authApiUrl = process.env.AUTH_API_URL || 'http://127.0.0.1:3004'
 
 app.disable('x-powered-by')

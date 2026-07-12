@@ -11,6 +11,7 @@ import { buildPptGenerationApiSettings, PPT_RECOMMENDED_RESPONSES_SIZE, PPT_RECO
 import { fetchImageUrlAsDataUrl, isDataUrl, isHttpUrl, MIME_MAP } from './lib/imageApiShared'
 import { normalizeBaseUrl, readClientDevProxyConfig, shouldUseApiProxy } from './lib/devProxy'
 import { callPptOutlineApi } from './lib/pptOutlineApi'
+import { archiveServerGenerationImages, createServerGenerationJob, updateServerGenerationJob } from './lib/generationJobsApi'
 import { useStore } from './store'
 import type { ApiProfile } from './types'
 
@@ -56,11 +57,12 @@ interface SlideGenerationResult extends NormalizedSlideImage {
   failedRequestCount?: number
 }
 
-const MAX_SLIDE_RETRIES = 5
+const MAX_SLIDE_RETRIES = 3
 const MAX_SLIDE_ATTEMPTS = MAX_SLIDE_RETRIES + 1
 const PPT_PARTIAL_FINALIZE_GRACE_MS = 30_000
 const PPT_RESCUE_CONCURRENCY = 1
 const GORDEN_EXPORT_TIMEOUT_SECONDS = 600
+const GORDEN_EXPORT_STATE_KEY = 'macode-image.gorden-export-state'
 
 const STYLE_PRESETS = [
   '清晰、专业、信息密度高的科技商务风格',
@@ -272,6 +274,29 @@ async function normalizeSlideImageForDisplay(
   }
 }
 
+async function archivePptResultImages(jobId: string, images: string[]): Promise<{ images: string[]; warnings: string[] }> {
+  const remoteUrls = Array.from(new Set(images.filter(isHttpUrl)))
+  if (!remoteUrls.length) return { images, warnings: [] }
+  const result = await archiveServerGenerationImages(jobId, remoteUrls)
+  const archivedByUrl = new Map(result.images.map((item) => [item.sourceUrl, item.dataUrl]))
+  const missingCount = remoteUrls.length - result.images.length
+  return {
+    images: images.map((image) => isHttpUrl(image) ? archivedByUrl.get(image) || image : image),
+    warnings: [
+      ...result.warnings,
+      ...(missingCount > 0 ? [`${missingCount} 张图片仍使用远端链接`] : []),
+    ],
+  }
+}
+
+function saveGordenExportState(value: Record<string, unknown>) {
+  try {
+    localStorage.setItem(GORDEN_EXPORT_STATE_KEY, JSON.stringify({ ...value, updatedAt: Date.now() }))
+  } catch {
+    // Export state is helpful for recovery messaging but must never block conversion.
+  }
+}
+
 export default function PptApp({ embedded = false }: PptAppProps) {
   const settings = useStore((s) => s.settings)
   const normalizedSettings = useMemo(() => normalizeSettings(settings), [settings])
@@ -326,6 +351,18 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     }
   }, [])
 
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(GORDEN_EXPORT_STATE_KEY) || 'null') as { status?: string; message?: string } | null
+      if (saved?.status === 'running' || saved?.status === 'stopping') {
+        setMessage('上次 Gorden 转换因页面关闭或刷新而中断。已恢复按钮状态，可重新开始转换；已生成的幻灯片图片不会丢失。')
+        saveGordenExportState({ status: 'interrupted', message: saved.message || '' })
+      }
+    } catch {
+      localStorage.removeItem(GORDEN_EXPORT_STATE_KEY)
+    }
+  }, [])
+
   const abortActiveSlideRequests = (reason: string) => {
     for (const controller of slideControllersRef.current.values()) {
       controller.abort(new Error(reason))
@@ -345,6 +382,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
   const stopSkillExport = () => {
     skillExportControllerRef.current?.abort(new Error('Gorden 转换已停止'))
+    saveGordenExportState({ status: 'stopping', message: '用户正在停止转换' })
     setMessage('正在停止 Gorden 转换...')
   }
 
@@ -402,6 +440,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     items: Array<{ plan: PptSlidePlan; slideIndex: number }>,
     runId: number,
     requestedConcurrency: number,
+    maxAttempts: number,
   ) => {
     const params = normalizeParamsForSettings(
       {
@@ -417,7 +456,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
     await runWithConcurrency(items, requestedConcurrency, async ({ plan: slidePlan, slideIndex }) => {
       try {
-        const result = await generateSlideImage(slidePlan, slideIndex, runId, params)
+        const result = await generateSlideImage(slidePlan, slideIndex, runId, params, maxAttempts)
         if (!result) return
         successCount = Math.min(items.length, successCount + 1)
         assignGeneratedImage(slideIndex, result)
@@ -428,7 +467,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
         const error = getErrorMessage(err)
         setSlides((current) => current.map((item, i) =>
           i === slideIndex && item.status !== 'done'
-            ? { ...item, status: 'error', error, attempt: MAX_SLIDE_ATTEMPTS, finishedAt: Date.now() }
+            ? { ...item, status: 'error', error, attempt: maxAttempts, finishedAt: Date.now() }
             : item,
         ))
       }
@@ -489,11 +528,18 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     slideIndex: number,
     runId: number,
     params: typeof DEFAULT_PPT_PARAMS,
+    maxAttempts: number,
   ): Promise<SlideGenerationResult | null> => {
     let lastError = ''
     const fallbackMime = MIME_MAP[params.output_format] || 'image/png'
+    const serverJobId = `ppt-${runId}-${slideIndex}`
+    try {
+      await createServerGenerationJob({ id: serverJobId, requestedCount: 1, provider: pptProfile.provider })
+    } catch (error) {
+      console.warn('PPT server job creation warning:', error)
+    }
 
-    for (let attempt = 1; attempt <= MAX_SLIDE_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (runIdRef.current !== runId) return null
       const controller = new AbortController()
       slideControllersRef.current.set(slideIndex, controller)
@@ -522,6 +568,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
           inputImageDataUrls: [],
           signal: controller.signal,
           allowRawImageUrls: true,
+          requestId: serverJobId,
           onPartialImage: (partial) => {
             void normalizeSlideImageForDisplay(partial.image, pptProfile, fallbackMime, controller.signal)
               .then((partialResult) => {
@@ -556,6 +603,11 @@ export default function PptApp({ embedded = false }: PptAppProps) {
             }
           }
           if (runIdRef.current !== runId) return null
+          void updateServerGenerationJob(serverJobId, {
+            status: 'completed',
+            receivedCount: 1,
+            finishedAt: Date.now(),
+          }).catch((error) => console.warn('PPT server job update warning:', error))
           return {
             ...image,
             warning: image.warning,
@@ -565,9 +617,19 @@ export default function PptApp({ embedded = false }: PptAppProps) {
 
         const result = settled.result
         if (!result) return null
+        let materializedImages = result.images.filter(Boolean)
+        let archiveWarning = ''
+        if (materializedImages.some(isHttpUrl)) {
+          try {
+            const archiveResult = await archivePptResultImages(serverJobId, materializedImages)
+            materializedImages = archiveResult.images
+            archiveWarning = archiveResult.warnings.join('；')
+          } catch (error) {
+            archiveWarning = `图片已生成，但本站归档失败：${getPlainErrorMessage(error)}。不会重新调用生图模型。`
+          }
+        }
         const normalizedImageResults = await Promise.allSettled(
-          result.images
-            .filter(Boolean)
+          materializedImages
             .map((item) => normalizeSlideImageForDisplay(item, pptProfile, fallbackMime, controller.signal)),
         )
         const normalizedImages = normalizedImageResults
@@ -588,10 +650,17 @@ export default function PptApp({ embedded = false }: PptAppProps) {
         }
         if (runIdRef.current !== runId) return null
         const failedRequests = Array.isArray(result.failedRequests) ? result.failedRequests.length : 0
+        void updateServerGenerationJob(serverJobId, {
+          status: archiveWarning ? 'archive_error' : 'completed',
+          receivedCount: materializedImages.filter(isDataUrl).length,
+          errorMessage: archiveWarning || null,
+          finishedAt: archiveWarning ? null : Date.now(),
+        }).catch((error) => console.warn('PPT server job update warning:', error))
         return {
           ...image,
           warning: [
             image.warning,
+            archiveWarning,
             failedRequests ? `${failedRequests} 个并发请求失败，已使用成功返回的图片` : '',
             failedNormalizations ? `${failedNormalizations} 张返回图处理失败，已使用可用图片` : '',
           ].filter(Boolean).join('；') || undefined,
@@ -618,7 +687,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
             extraImageCount: 0,
           }
         }
-        if (attempt >= MAX_SLIDE_ATTEMPTS) break
+        if (attempt >= maxAttempts) break
 
         const waitMs = Math.min(10_000, 1500 * attempt + Math.round(Math.random() * 700))
         setSlides((current) => current.map((item, i) => i === slideIndex ? { ...item, status: 'running', error: `${lastError}，${Math.round(waitMs / 1000)} 秒后重试`, attempt } : item))
@@ -631,6 +700,11 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       }
     }
 
+    void updateServerGenerationJob(serverJobId, {
+      status: 'failed',
+      errorMessage: lastError || '生成失败',
+      finishedAt: Date.now(),
+    }).catch((error) => console.warn('PPT server job update warning:', error))
     throw new Error(lastError || '生成失败')
   }
 
@@ -659,6 +733,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
       plan.map((item, slideIndex) => ({ plan: item, slideIndex })),
       nextRunId,
       requestedConcurrency,
+      1,
     )
 
     if (runIdRef.current === nextRunId) {
@@ -671,7 +746,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
             ? { ...slide, status: 'pending', error: undefined, attempt: undefined, startedAt: undefined, finishedAt: undefined }
             : slide,
         ))
-        const rescuePass = await runSlideBatch(firstPass.failedItems, nextRunId, PPT_RESCUE_CONCURRENCY)
+        const rescuePass = await runSlideBatch(firstPass.failedItems, nextRunId, PPT_RESCUE_CONCURRENCY, MAX_SLIDE_RETRIES)
         if (runIdRef.current !== nextRunId) return
         successCount += rescuePass.successCount
         failCount = rescuePass.failCount
@@ -713,7 +788,7 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     setMessage(`正在重试失败页，最多 ${requestedConcurrency} 页同时进行`)
     setSlides((current) => current.map((slide) => slide.status === 'error' ? { ...slide, status: 'pending', error: undefined, attempt: undefined, startedAt: undefined, finishedAt: undefined } : slide))
 
-    const { successCount, failCount } = await runSlideBatch(retryItems, nextRunId, requestedConcurrency)
+    const { successCount, failCount } = await runSlideBatch(retryItems, nextRunId, requestedConcurrency, MAX_SLIDE_ATTEMPTS)
     if (runIdRef.current === nextRunId) {
       setRunning(false)
       setMessage(failCount > 0 ? `重试完成：成功 ${successCount} 页，仍失败 ${failCount} 页` : `重试完成：成功 ${successCount} 页`)
@@ -771,6 +846,13 @@ export default function PptApp({ embedded = false }: PptAppProps) {
     skillExportControllerRef.current?.abort(new Error('新的 Skill 导出已开始'))
     skillExportControllerRef.current = controller
     beginExport('gorden')
+    saveGordenExportState({
+      status: 'running',
+      stage: 'start',
+      startedAt,
+      topic,
+      slideCount: getCompletedSkillSlides().length,
+    })
     setMessage('Gorden Super PPT Skills：开始 A→B 四层可编辑转换')
     try {
       const time = formatExportFileTime(new Date())
@@ -794,14 +876,38 @@ export default function PptApp({ embedded = false }: PptAppProps) {
         signal: controller.signal,
         onProgress: (progress) => {
           const elapsed = formatElapsed(Date.now() - startedAt)
+          saveGordenExportState({
+            status: 'running',
+            stage: progress.stage,
+            slideIndex: progress.slideIndex,
+            message: progress.message,
+            startedAt,
+            topic,
+          })
           setMessage(`Gorden Super PPT Skills：${progress.message}\n已运行 ${elapsed}；整套转换超时 ${exportTimeoutSeconds}s。`)
         },
       })
       replaceGordenDownloads(createGordenDownloadLinks(result))
       downloadGordenSuperPptSkillResult(result)
-      setMessage(`已生成 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包。若浏览器未自动下载，请使用下方链接。`)
+      saveGordenExportState({
+        status: 'completed',
+        stage: 'qa-passed',
+        slideCount: result.editableSlides.length,
+        qaReport: result.qaReport,
+        topic,
+      })
+      const qaWarning = result.qaReport.warnings.length ? `；QA 提示：${result.qaReport.warnings.join('；')}` : ''
+      setMessage(`已生成 ${result.editableSlides.length} 页：图片型 PPTX、四层可编辑 PPTX、Skill 产物包；QA 已通过${qaWarning}。若浏览器未自动下载，请使用下方链接。`)
     } catch (err) {
-      setMessage(getErrorMessage(err))
+      const error = getErrorMessage(err)
+      saveGordenExportState({
+        status: controller.signal.aborted ? 'stopped' : 'failed',
+        stage: 'error',
+        message: error,
+        startedAt,
+        topic,
+      })
+      setMessage(error)
     } finally {
       window.clearTimeout(timeoutId)
       if (skillExportControllerRef.current === controller) {

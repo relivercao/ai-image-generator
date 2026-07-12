@@ -19,6 +19,7 @@ export interface CallApiOptions {
   maskDataUrl?: string
   signal?: AbortSignal
   allowRawImageUrls?: boolean
+  requestId?: string
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
@@ -37,6 +38,8 @@ export interface CallApiResult {
   rawImageUrls?: string[]
   /** 并发多图请求中失败的单张请求 */
   failedRequests?: Array<{ requestIndex: number; error: string }>
+  /** 结果已生成但后处理或归档存在非致命问题。 */
+  warnings?: string[]
 }
 
 export function isHttpUrl(value: unknown): value is string {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from 'react'
 import { useStore } from '../store'
+import { MACODE_API_BASE_URL } from '../lib/macodeConfig'
 import { createDefaultOpenAIProfile, DEFAULT_OPENAI_PROFILE_ID, getActiveApiProfile, normalizeSettings } from '../lib/apiProfiles'
 import {
   AUTO_API_KEY_STORAGE_KEY,
@@ -7,7 +8,7 @@ import {
   USER_API_KEY_UPDATED_EVENT,
 } from '../lib/authApi'
 
-const MACODE_OPENAI_BASE_URL = 'https://macode.cloud/v1'
+const MACODE_OPENAI_BASE_URL = MACODE_API_BASE_URL
 
 export function useAutoConfigureApiKey() {
   const settings = useStore((state) => state.settings)

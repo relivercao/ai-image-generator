@@ -640,6 +640,11 @@ export default function DetailModal() {
               )}
             </div>
           )}
+          {task.status === 'done' && task.resultWarnings && task.resultWarnings.length > 0 && (
+            <div className="absolute bottom-4 left-4 right-4 rounded-lg border border-amber-300/60 bg-amber-50/95 px-3 py-2 text-xs leading-relaxed text-amber-900 shadow-sm backdrop-blur dark:border-amber-400/30 dark:bg-amber-950/90 dark:text-amber-100">
+              {task.resultWarnings.join('\n')}
+            </div>
+          )}
           {(task.status === 'running' || isFalReconnecting) && (
             <>
               <div className="absolute left-4 top-4 flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">

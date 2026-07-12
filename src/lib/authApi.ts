@@ -25,6 +25,13 @@ export const AUTH_ENDPOINTS = {
   register: `${AUTH_API_BASE_URL}/auth/register`,
   verify: `${AUTH_API_BASE_URL}/auth/verify`,
   apiKey: `${AUTH_API_BASE_URL}/auth/api-key`,
+  health: `${AUTH_API_BASE_URL}/health`,
+}
+
+export const GENERATION_JOBS_API_BASE_URL = `${AUTH_API_BASE_URL}/generation-jobs`
+
+export function getStoredAuthToken(): string {
+  return typeof localStorage === 'undefined' ? '' : localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || ''
 }
 
 export function requestMacodeAuth() {

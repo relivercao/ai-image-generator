@@ -48,6 +48,14 @@ import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
+import { MACODE_API_BASE_URL } from './lib/macodeConfig'
+import {
+  archiveServerGenerationImages,
+  createServerGenerationJob,
+  downloadServerGenerationJobImages,
+  getServerGenerationJob,
+  updateServerGenerationJob,
+} from './lib/generationJobsApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
@@ -128,7 +136,7 @@ const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤
 const GALLERY_MAX_GENERATION_RETRIES = 3
 const GALLERY_RETRY_BASE_DELAY_MS = 1200
 const GALLERY_RETRY_MAX_DELAY_MS = 6000
-const MACODE_OPENAI_BASE_URL = 'https://macode.cloud/v1'
+const MACODE_OPENAI_BASE_URL = MACODE_API_BASE_URL
 
 type TimeoutStreamingHintProfile = Pick<ApiProfile, 'provider' | 'streamImages' | 'streamPartialImages'>
 
@@ -222,6 +230,15 @@ export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl:
 
   const rec = await getStoredFreshImageThumbnail(id)
   if (!rec?.thumbnailDataUrl) {
+    const image = await getImage(id)
+    if (image?.dataUrl && /^https?:\/\//i.test(image.dataUrl)) {
+      const remoteThumbnail = {
+        dataUrl: image.dataUrl,
+        width: image.width,
+        height: image.height,
+      }
+      return remoteThumbnail
+    }
     scheduleThumbnailBackfill([id], 'visible')
     return undefined
   }
@@ -2155,7 +2172,12 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  await createBestEffortServerJob(task)
+  const archivedResult = await archiveRemoteResultUrls(
+    useStore.getState().tasks.find((item) => item.id === task.id) ?? task,
+    result,
+  )
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, archivedResult.images)
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
 
   updateTaskInStore(task.id, {
@@ -2167,6 +2189,8 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     status: 'done',
     error: null,
     falRecoverable: false,
+    serverJobId: latest.serverJobId || task.id,
+    archivedImageCount: archivedResult.rawImageUrls?.length ? outputIds.length : latest.archivedImageCount,
     finishedAt: Date.now(),
     elapsed: Date.now() - task.createdAt,
   })
@@ -2263,6 +2287,14 @@ export async function initStore() {
   useStore.getState().setTasks(tasks)
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
+    const hasAuthSession = typeof localStorage !== 'undefined' && Boolean(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
+    if (hasAuthSession && task.rawImageUrls?.length && task.resultWarnings?.length && (task.archivedImageCount ?? 0) < task.rawImageUrls.length) {
+      void retryTask(task)
+      continue
+    }
+    if (task.serverJobId && task.outputImages.length === 0) {
+      void recoverArchivedServerJob(task)
+    }
     if (
       task.apiProvider === 'fal' &&
       task.falRequestId &&
@@ -2538,6 +2570,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([task, ...latestTasks])
   await putTask(task)
+  await createBestEffortServerJob(task)
   useStore.getState().showToast('任务已提交', 'success')
 
   if (settings.clearInputAfterSubmit) {
@@ -2857,6 +2890,93 @@ export function deleteAgentRoundFromConversation(conversation: AgentConversation
     ...withRemappedMessages,
     activeRoundId: withRemappedMessages.activeRoundId ?? activeRounds[activeRounds.length - 1]?.id ?? null,
     updatedAt: now,
+  }
+}
+
+async function createBestEffortServerJob(task: TaskRecord) {
+  try {
+    const job = await createServerGenerationJob({
+      id: task.id,
+      requestedCount: task.params.n,
+      provider: task.apiProvider,
+    })
+    if (job) updateTaskInStore(task.id, { serverJobId: job.id })
+  } catch (error) {
+    console.warn('Failed to create server generation job:', error)
+  }
+}
+
+async function archiveRemoteResultUrls(task: TaskRecord, result: CallApiResult): Promise<CallApiResult> {
+  const remoteUrls = Array.from(new Set([
+    ...(result.rawImageUrls ?? []),
+    ...result.images.filter((image) => /^https?:\/\//i.test(image)),
+  ]))
+  if (!remoteUrls.length) return result
+
+  const serverJobId = task.serverJobId || task.id
+  let archiveResult: Awaited<ReturnType<typeof archiveServerGenerationImages>>
+  try {
+    archiveResult = await archiveServerGenerationImages(serverJobId, remoteUrls)
+  } catch (cause) {
+    const warning = `上游已生成图片，但本站归档失败：${getPlainErrorMessage(cause)}。图片将先使用远端链接显示；重试只会重新归档，不会再次调用生图模型。`
+    return {
+      ...result,
+      rawImageUrls: remoteUrls,
+      warnings: [...(result.warnings ?? []), warning],
+    }
+  }
+  const archivedImages = archiveResult.images
+  const archivedBySourceUrl = new Map(archivedImages.map((image) => [image.sourceUrl, image.dataUrl]))
+  const images = result.images.map((image) => /^https?:\/\//i.test(image) ? archivedBySourceUrl.get(image) || image : image)
+  const missingArchiveCount = remoteUrls.length - archivedImages.length
+  const warnings = [
+    ...(result.warnings ?? []),
+    ...archiveResult.warnings,
+    ...(missingArchiveCount > 0 ? [`${missingArchiveCount} 张图片仍使用远端链接显示，后续会自动重试归档`] : []),
+  ]
+  return {
+    ...result,
+    images: Array.from(new Set(images)),
+    rawImageUrls: remoteUrls,
+    warnings: warnings.length ? Array.from(new Set(warnings)) : undefined,
+  }
+}
+
+async function updateServerJobBestEffort(id: string, patch: Record<string, unknown>) {
+  try {
+    await updateServerGenerationJob(id, patch)
+  } catch (error) {
+    console.warn('Failed to update server generation job:', error)
+  }
+}
+
+async function recoverArchivedServerJob(task: TaskRecord): Promise<boolean> {
+  if (!task.serverJobId || task.outputImages.length > 0) return false
+  try {
+    const job = await getServerGenerationJob(task.serverJobId)
+    if (!job || job.status !== 'completed') return false
+    const images = await downloadServerGenerationJobImages(job)
+    if (!images.length) return false
+    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, images)
+    const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
+    updateTaskInStore(task.id, {
+      outputImages: outputIds,
+      transparentOriginalImages: transparentOriginalImageIds,
+      actualParams: { ...(firstActualParams(actualParamsList) ?? {}), n: outputIds.length },
+      actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
+      archivedImageCount: outputIds.length,
+      status: 'done',
+      error: null,
+      finishedAt: job.finished_at || Date.now(),
+      elapsed: Date.now() - task.createdAt,
+      falRecoverable: false,
+      customRecoverable: false,
+    })
+    useStore.getState().showToast(`已从服务器恢复 ${outputIds.length} 张图片`, 'success')
+    return true
+  } catch (error) {
+    console.warn('Failed to inspect server generation job:', error)
+    return false
   }
 }
 
@@ -4472,6 +4592,15 @@ async function executeTask(taskId: string) {
       return
     }
 
+    const expectedCount = Math.max(1, task.params.n || 1)
+    const missingCount = Math.max(0, expectedCount - result.images.length - (result.failedRequests?.length ?? 0))
+    const completenessErrors = missingCount > 0
+      ? Array.from({ length: missingCount }, (_, index) => ({
+          requestIndex: result.images.length + (result.failedRequests?.length ?? 0) + index,
+          error: '上游返回的图片数量少于请求数量',
+        }))
+      : []
+    const outputErrors = [...(result.failedRequests ?? []), ...completenessErrors]
     const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
     const actualParamsList = await resolveImageSizeParamsList(
@@ -4519,9 +4648,10 @@ async function executeTask(taskId: string) {
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       transparentOriginalImages: transparentOriginalImageIds,
-      outputErrors: options.partialFallbackError ? undefined : result.failedRequests?.length ? result.failedRequests : undefined,
+      outputErrors: options.partialFallbackError ? undefined : outputErrors.length ? outputErrors : undefined,
       streamPartialImageIds: undefined,
       rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
+      resultWarnings: result.warnings?.length ? result.warnings : undefined,
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
@@ -4531,16 +4661,26 @@ async function executeTask(taskId: string) {
       elapsed: Date.now() - task.createdAt,
       falRecoverable: false,
       customRecoverable: false,
+      serverJobId: latestBeforeUpdate.serverJobId || task.id,
+      archivedImageCount: result.rawImageUrls?.length && !result.warnings?.length ? outputIds.length : latestBeforeUpdate.archivedImageCount,
+    })
+    void updateServerJobBestEffort(latestBeforeUpdate.serverJobId || task.id, {
+      status: result.warnings?.length ? 'archive_error' : 'completed',
+      receivedCount: result.warnings?.length ? (latestBeforeUpdate.archivedImageCount ?? 0) : outputIds.length,
+      errorMessage: [...outputErrors.map((item) => item.error), ...(result.warnings ?? [])].join('\n') || null,
+      finishedAt: result.warnings?.length ? null : Date.now(),
     })
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
-    const failedCount = result.failedRequests?.length ?? 0
+    const failedCount = outputErrors.length
     const completionMessage = options.partialFallbackError
       ? `生成完成：已保留 ${outputIds.length} 张流式预览图，最终响应失败`
       : failedCount > 0
       ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
+      : result.warnings?.length
+      ? `生成完成，共 ${outputIds.length} 张图片；${result.warnings.length} 项结果待归档`
       : `生成完成，共 ${outputIds.length} 张图片`
-    useStore.getState().showToast(completionMessage, options.partialFallbackError || failedCount > 0 ? 'error' : 'success')
+    useStore.getState().showToast(completionMessage, options.partialFallbackError || failedCount > 0 || result.warnings?.length ? 'error' : 'success')
     if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `${completionMessage}。`)
     const currentMask = useStore.getState().maskDraft
     if (
@@ -4576,6 +4716,8 @@ async function executeTask(taskId: string) {
       params: task.params,
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
+      requestId: task.serverJobId || task.id,
+      allowRawImageUrls: true,
       onFalRequestEnqueued: (request) => {
         falRequestInfo = request
         updateTaskInStore(taskId, {
@@ -4583,12 +4725,20 @@ async function executeTask(taskId: string) {
           falEndpoint: request.endpoint,
           falRecoverable: false,
         })
+        void updateServerJobBestEffort(task.serverJobId || task.id, {
+          status: 'processing',
+          providerTaskId: request.requestId,
+        })
       },
       onCustomTaskEnqueued: (request) => {
         customTaskInfo = request
         updateTaskInStore(taskId, {
           customTaskId: request.taskId,
           customRecoverable: false,
+        })
+        void updateServerJobBestEffort(task.serverJobId || task.id, {
+          status: 'processing',
+          providerTaskId: request.taskId,
         })
       },
       onPartialImage: (partial) => {
@@ -4598,7 +4748,9 @@ async function executeTask(taskId: string) {
       },
     })
 
-    await completeWithResult(result)
+    const latestBeforeArchive = useStore.getState().tasks.find((item) => item.id === taskId) ?? task
+    const archivedResult = await archiveRemoteResultUrls(latestBeforeArchive, result)
+    await completeWithResult(archivedResult)
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
@@ -4609,7 +4761,7 @@ async function executeTask(taskId: string) {
       : null)
     const latestCustomTaskInfo = customTaskInfo ?? (latestTask.customTaskId ? { taskId: latestTask.customTaskId } : null)
     if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isFalConnectionRecoverableError(err)) {
-      updateTaskInStore(taskId, {
+        updateTaskInStore(taskId, {
         status: 'error',
         error: '与 macode.cloud 队列通道的连接已断开，之后会继续查询任务结果。',
         falRequestId: latestFalRequestInfo.requestId,
@@ -4617,6 +4769,11 @@ async function executeTask(taskId: string) {
         falRecoverable: true,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
+      })
+      void updateServerJobBestEffort(latestTask.serverJobId || task.id, {
+        status: 'processing',
+        providerTaskId: latestFalRequestInfo.requestId,
+        errorMessage: getPlainErrorMessage(err),
       })
       scheduleFalRecovery(taskId)
     } else if (latestCustomTaskInfo && isFalConnectionRecoverableError(err)) {
@@ -4627,6 +4784,11 @@ async function executeTask(taskId: string) {
         customRecoverable: true,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
+      })
+      void updateServerJobBestEffort(latestTask.serverJobId || task.id, {
+        status: 'processing',
+        providerTaskId: latestCustomTaskInfo.taskId,
+        errorMessage: getPlainErrorMessage(err),
       })
       scheduleCustomRecovery(taskId)
     } else {
@@ -4674,6 +4836,11 @@ async function executeTask(taskId: string) {
         customRecoverable: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
+      })
+      void updateServerJobBestEffort(latestTask.serverJobId || task.id, {
+        status: getRawErrorPayload(finalErr).rawImageUrls?.length ? 'archive_error' : 'failed',
+        errorMessage,
+        finishedAt: Date.now(),
       })
       useStore.getState().setDetailTaskId(taskId)
     }
@@ -4871,6 +5038,53 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
+  if (task.rawImageUrls?.length && (task.archivedImageCount ?? 0) < task.rawImageUrls.length) {
+    const previousOutputIds = [...task.outputImages]
+    updateTaskInStore(task.id, {
+      status: 'running',
+      error: '正在重新归档上游已生成的图片，不会再次调用生图模型。',
+      finishedAt: null,
+      elapsed: null,
+    })
+    try {
+      await createBestEffortServerJob(task)
+      const archived = await archiveRemoteResultUrls(
+        useStore.getState().tasks.find((item) => item.id === task.id) ?? task,
+        { images: task.rawImageUrls, rawImageUrls: task.rawImageUrls },
+      )
+      if (archived.warnings?.length || archived.images.some((image) => /^https?:\/\//i.test(image))) {
+        throw new Error(archived.warnings?.[0] || '图片仍未完成本站归档')
+      }
+      const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, archived.images)
+      const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
+      updateTaskInStore(task.id, {
+        outputImages: outputIds,
+        transparentOriginalImages: transparentOriginalImageIds,
+        actualParams: { ...(firstActualParams(actualParamsList) ?? {}), n: outputIds.length },
+        actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
+        archivedImageCount: outputIds.length,
+        resultWarnings: undefined,
+        status: 'done',
+        error: null,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      void deleteUnreferencedImageIds(previousOutputIds)
+      useStore.getState().showToast(`已恢复 ${outputIds.length} 张图片，未重复生成`, 'success')
+    } catch (error) {
+      const message = getPlainErrorMessage(error)
+      updateTaskInStore(task.id, {
+        status: previousOutputIds.length ? 'done' : 'error',
+        error: previousOutputIds.length ? null : message,
+        resultWarnings: [message],
+        ...getRawErrorPayload(error),
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+    }
+    return
+  }
+
   const { settings } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
@@ -4907,6 +5121,7 @@ export async function retryTask(task: TaskRecord) {
   const latestTasks = useStore.getState().tasks
   useStore.getState().setTasks([newTask, ...latestTasks])
   await putTask(newTask)
+  await createBestEffortServerJob(newTask)
 
   executeTask(taskId)
 }
@@ -5149,7 +5364,12 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   const latest = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latest || latest.status === 'done') return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  await createBestEffortServerJob(task)
+  const archivedResult = await archiveRemoteResultUrls(
+    useStore.getState().tasks.find((item) => item.id === task.id) ?? task,
+    result,
+  )
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, archivedResult.images)
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
 
   updateTaskInStore(task.id, {
@@ -5161,6 +5381,8 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     status: 'done',
     error: null,
     customRecoverable: false,
+    serverJobId: latest.serverJobId || task.id,
+    archivedImageCount: archivedResult.rawImageUrls?.length ? outputIds.length : latest.archivedImageCount,
     finishedAt: Date.now(),
     elapsed: Date.now() - task.createdAt,
   })

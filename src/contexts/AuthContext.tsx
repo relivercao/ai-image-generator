@@ -65,9 +65,9 @@ async function fetchAuthJson(url: string, init?: RequestInit) {
   } catch (error) {
     console.warn('Macode auth request failed:', error)
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('登录服务响应超时。请确认已用 npm run dev 启动前端和认证桥，或单独运行 npm run auth:dev')
+      throw new Error('登录服务响应超时，请稍后重试。')
     }
-    throw new Error('登录服务不可达。请确认已用 npm run dev 启动前端和认证桥，或单独运行 npm run auth:dev')
+    throw new Error('登录服务暂时不可达，请稍后重试。')
   } finally {
     window.clearTimeout(timeout)
   }
@@ -80,7 +80,9 @@ async function fetchAuthJson(url: string, init?: RequestInit) {
       : typeof data.error === 'string'
       ? data.error
       : '请求失败'
-    throw new Error(message)
+    const error = new Error(message)
+    ;(error as Error & { status?: number }).status = response.status
+    throw error
   }
 
   return data
@@ -163,8 +165,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await refreshApiKey()
       } catch (error) {
         console.warn('Failed to verify macode session:', error)
-        clearSession()
-        if (!cancelled) setUser(null)
+        const status = error && typeof error === 'object' && 'status' in error
+          ? Number((error as { status?: unknown }).status)
+          : 0
+        if (status === 401 || status === 403) {
+          clearSession()
+          if (!cancelled) setUser(null)
+        } else if (!cancelled) {
+          setUser(readStoredUser())
+        }
       } finally {
         if (!cancelled) setIsLoading(false)
       }

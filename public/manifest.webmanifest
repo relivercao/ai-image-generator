@@ -1,7 +1,7 @@
 {
-  "name": "GPT Image Playground",
-  "short_name": "GPT Image",
-  "description": "GPT Image Playground 图像生成工作台",
+  "name": "Macode-Image",
+  "short_name": "Macode-Image",
+  "description": "Macode-Image 图像生成工作台",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
