@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { buildApiUrl, isApiProxyLocked, normalizeDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { buildApiUrl, isApiProxyLocked, normalizeDevProxyConfig, resolveDefaultProxyPrefix, shouldUseApiProxy } from './devProxy'
 
 describe('buildApiUrl', () => {
+  it('keeps the proxy under a relative production base path', () => {
+    expect(resolveDefaultProxyPrefix('./')).toBe('./api-proxy')
+    expect(resolveDefaultProxyPrefix('/image-playground/')).toBe('/image-playground/api-proxy')
+    expect(resolveDefaultProxyPrefix('/')).toBe('/api-proxy')
+  })
+
   it('uses the same-origin proxy prefix when API proxy is enabled', () => {
     expect(buildApiUrl('http://api.example.com/v1', 'images/edits', null, true)).toBe(
       '/api-proxy/images/edits',

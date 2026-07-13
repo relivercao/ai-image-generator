@@ -10,6 +10,7 @@
     "auth:start": "npm --prefix server start",
     "mock:api": "node scripts/mock-image-api.mjs",
     "build": "tsc -b && vite build",
+    "build:macode": "tsc -b && vite build --mode macode",
     "deploy:cf": "npm run build && wrangler deploy",
     "preview": "vite preview",
     "test": "vitest run",

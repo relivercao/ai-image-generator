@@ -36,6 +36,15 @@ app.use(
   }),
 )
 
+function sendRevalidatedStaticFile(filename) {
+  return (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(path.join(root, filename))
+  }
+}
+
+app.get('/sw.js', sendRevalidatedStaticFile('sw.js'))
+app.get('/manifest.webmanifest', sendRevalidatedStaticFile('manifest.webmanifest'))
 app.use(express.static(root, { maxAge: '1y', immutable: true, index: false }))
 app.get('*', (_req, res) => res.sendFile(path.join(root, 'index.html')))
 

@@ -9,7 +9,7 @@ import { normalizeParamsForSettings } from './lib/paramCompatibility'
 import { DEFAULT_PPT_CONCURRENCY, clampPptConcurrency, runWithConcurrency } from './lib/pptConcurrency'
 import { buildPptGenerationApiSettings, PPT_RECOMMENDED_RESPONSES_SIZE, PPT_RECOMMENDED_TIMEOUT_SECONDS, type PptGenerationMode } from './lib/pptApiSettings'
 import { fetchImageUrlAsDataUrl, isDataUrl, isHttpUrl, MIME_MAP } from './lib/imageApiShared'
-import { normalizeBaseUrl, readClientDevProxyConfig, shouldUseApiProxy } from './lib/devProxy'
+import { getApiProxyPrefix, normalizeBaseUrl, readClientDevProxyConfig, shouldUseApiProxy } from './lib/devProxy'
 import { callPptOutlineApi } from './lib/pptOutlineApi'
 import { archiveServerGenerationImages, createServerGenerationJob, updateServerGenerationJob } from './lib/generationJobsApi'
 import { useStore } from './store'
@@ -205,11 +205,11 @@ async function assertGeneratedSlideLooksUsable(dataUrl: string, options: { allow
 
 function createProxiedImageFetchUrl(imageUrl: string, profile: ApiProfile): string | null {
   const proxyConfig = readClientDevProxyConfig()
-  if (!proxyConfig?.enabled || !shouldUseApiProxy(profile.apiProxy, proxyConfig)) return null
+  if (!shouldUseApiProxy(profile.apiProxy, proxyConfig)) return null
 
   try {
     const source = new URL(imageUrl)
-    const target = new URL(normalizeBaseUrl(proxyConfig.target || profile.baseUrl))
+    const target = new URL(normalizeBaseUrl(proxyConfig?.target || profile.baseUrl))
     if (source.origin !== target.origin) return null
 
     const targetPath = target.pathname.replace(/\/+$/, '')
@@ -224,7 +224,7 @@ function createProxiedImageFetchUrl(imageUrl: string, profile: ApiProfile): stri
       }
     }
 
-    return `${proxyConfig.prefix}${proxiedPath}${source.search}`
+    return `${getApiProxyPrefix(proxyConfig)}${proxiedPath}${source.search}`
   } catch {
     return null
   }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.1.5'
+const CACHE_NAME = 'macode-image-v0.6.10-proxy-fix-1'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
@@ -24,6 +24,18 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+
+  const scopePath = new URL(self.registration.scope).pathname.replace(/\/+$/, '/')
+  const relativePath = url.pathname.startsWith(scopePath)
+    ? url.pathname.slice(scopePath.length)
+    : url.pathname.replace(/^\/+/, '')
+  if (
+    request.headers.has('authorization') ||
+    relativePath === 'api' ||
+    relativePath.startsWith('api/') ||
+    relativePath === 'api-proxy' ||
+    relativePath.startsWith('api-proxy/')
+  ) return
 
   if (request.mode === 'navigate') {
     event.respondWith(
