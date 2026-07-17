@@ -4,6 +4,7 @@ import { copyImageSourceToClipboard, getClipboardFailureMessage } from '../lib/c
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getImageZipEntries } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
+import { MAX_REFERENCE_IMAGES } from '../lib/referenceImages'
 
 export default function ImageContextMenu() {
   const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; outputImageIds: string[]; x: number; y: number } | null>(null)
@@ -166,8 +167,8 @@ export default function ImageContextMenu() {
   const handleEdit = async (e: React.MouseEvent) => {
     e.stopPropagation()
     setMenuInfo(null)
-    if (inputImages.length >= 16) {
-      showToast('参考图数量已达上限（16 张），无法继续添加', 'error')
+    if (inputImages.length >= MAX_REFERENCE_IMAGES) {
+      showToast(`参考图数量已达上限（${MAX_REFERENCE_IMAGES} 张），无法继续添加`, 'error')
       return
     }
 

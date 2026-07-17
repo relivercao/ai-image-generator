@@ -61,9 +61,15 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { AUTH_TOKEN_STORAGE_KEY, requestMacodeAuth } from './lib/authApi'
-import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
+import { blobToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
+import {
+  getReferenceRequestTimeoutSeconds,
+  MAX_REFERENCE_IMAGES,
+  optimizeReferenceImageDataUrl,
+  prepareReferenceImageFile,
+} from './lib/referenceImages'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -1337,6 +1343,7 @@ export const useStore = create<AppState>()(
       addInputImage: (img) =>
         set((s) => {
           if (s.inputImages.find((i) => i.id === img.id)) return s
+          if (s.inputImages.length >= MAX_REFERENCE_IMAGES) return s
           return syncActiveInputDraft(s, { inputImages: [...s.inputImages, img] })
         }),
       replaceInputImage: (idx, img) => {
@@ -1965,6 +1972,10 @@ function isGalleryRetryableError(err: unknown): boolean {
   return /abort|network|failed to fetch|fetch failed|load failed|networkerror|timeout|timed out|429|rate.?limit|temporar|unavailable|overload|5\d\d|gateway|bad gateway|service unavailable|连接|断开|中断|超时|限流|繁忙/i.test(message)
 }
 
+function isReferenceGalleryRetryableError(err: unknown): boolean {
+  return /429|rate.?limit|限流/i.test(getPlainErrorMessage(err))
+}
+
 function getGalleryRetryDelayMs(failedAttempt: number): number {
   if (failedAttempt <= 1) return 0
   const jitter = Math.round(Math.random() * 500)
@@ -1991,7 +2002,10 @@ async function callGalleryImageApiWithRetry(
       lastError = err
       const latestAfterError = useStore.getState().tasks.find((task) => task.id === taskId)
       const remoteTaskAlreadyEnqueued = Boolean(latestAfterError?.falRequestId || latestAfterError?.customTaskId)
-      const shouldRetry = attempt <= GALLERY_MAX_GENERATION_RETRIES && !remoteTaskAlreadyEnqueued && isGalleryRetryableError(err)
+      const retryableError = opts.inputImageDataUrls.length > 0
+        ? isReferenceGalleryRetryableError(err)
+        : isGalleryRetryableError(err)
+      const shouldRetry = attempt <= GALLERY_MAX_GENERATION_RETRIES && !remoteTaskAlreadyEnqueued && retryableError
       if (!shouldRetry) break
 
       const waitMs = getGalleryRetryDelayMs(attempt)
@@ -2489,6 +2503,11 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   if (!prompt.trim()) {
     showToast('请输入提示词', 'error')
+    return
+  }
+
+  if (inputImages.length > MAX_REFERENCE_IMAGES) {
+    showToast(`参考图最多上传 ${MAX_REFERENCE_IMAGES} 张，请移除多余图片后再生成`, 'error')
     return
   }
 
@@ -3496,6 +3515,11 @@ export async function submitAgentMessage() {
   const trimmedPrompt = prompt.trim()
   if (!trimmedPrompt) {
     showToast('请输入消息', 'error')
+    return
+  }
+
+  if (inputImages.length > MAX_REFERENCE_IMAGES) {
+    showToast(`参考图最多上传 ${MAX_REFERENCE_IMAGES} 张，请移除多余图片后再生成`, 'error')
     return
   }
 
@@ -4573,7 +4597,11 @@ async function executeTask(taskId: string) {
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
     !usesConcurrentOpenAIImageRequests(activeProfile, task.params)
   ) {
-    scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
+    scheduleOpenAIWatchdog(
+      taskId,
+      getReferenceRequestTimeoutSeconds(activeProfile.timeout, task.inputImageIds.length > 0),
+      activeProfile,
+    )
   }
 
   const partialImagesByRequest = new Map<number, string>()
@@ -4699,7 +4727,8 @@ async function executeTask(taskId: string) {
     for (const imgId of task.inputImageIds) {
       const dataUrl = await ensureImageCached(imgId)
       if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
+      const isMaskTarget = Boolean(task.maskImageId && imgId === task.maskTargetImageId)
+      inputDataUrls.push(isMaskTarget ? dataUrl : (await optimizeReferenceImageDataUrl(dataUrl)).dataUrl)
     }
     if (task.maskImageId) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
@@ -5597,7 +5626,7 @@ export async function addImageFromFile(file: File): Promise<void> {
 
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
-  const dataUrl = await fileToDataUrl(file)
+  const { dataUrl } = await prepareReferenceImageFile(file)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   return { id, dataUrl }
@@ -5608,7 +5637,8 @@ export async function addImageFromUrl(src: string): Promise<void> {
   const res = await fetch(src)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
-  const dataUrl = await blobToDataUrl(blob)
+  const sourceDataUrl = await blobToDataUrl(blob)
+  const { dataUrl } = await optimizeReferenceImageDataUrl(sourceDataUrl)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })

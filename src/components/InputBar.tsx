@@ -18,6 +18,7 @@ import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
 import InputParamsPanel from './input/inputParamsPanel'
 import GalleryPromptPresets from './input/GalleryPromptPresets'
+import { MAX_REFERENCE_IMAGES } from '../lib/referenceImages'
 
 
 
@@ -325,9 +326,6 @@ function setContentEditableSelection(el: HTMLElement, start: number, end: number
   sel.removeAllRanges()
   sel.addRange(range)
 }
-
-/** API 支持的最大参考图数量 */
-const API_MAX_IMAGES = 16
 
 function getFavoriteCollectionTasksForBatch(collectionId: string, tasks: TaskRecord[]) {
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
@@ -774,8 +772,10 @@ export default function InputBar() {
         { label: 'medium', value: 'medium' },
         { label: 'high', value: 'high' },
       ]
-  const atImageLimit = inputImages.length >= API_MAX_IMAGES
-  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加` : '上传图片'
+  const atImageLimit = inputImages.length >= MAX_REFERENCE_IMAGES
+  const uploadImageTooltipText = atImageLimit
+    ? `参考图数量已达上限（${MAX_REFERENCE_IMAGES} 张），无法继续添加`
+    : `上传参考图（最多 ${MAX_REFERENCE_IMAGES} 张）`
   const transparentOutputHint = useHintTooltip()
   const handleTransparentOutputMenuOpenChange = useCallback((open: boolean) => {
     if (open) transparentOutputHint.hide()
@@ -1099,18 +1099,23 @@ export default function InputBar() {
   const handleFiles = async (files: FileList | File[]) => {
     try {
       const currentCount = useStore.getState().inputImages.length
-      if (currentCount >= API_MAX_IMAGES) {
+      if (currentCount >= MAX_REFERENCE_IMAGES) {
         useStore.getState().showToast(
-          `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加`,
+          `参考图数量已达上限（${MAX_REFERENCE_IMAGES} 张），无法继续添加`,
           'error',
         )
         return
       }
 
-      const remaining = API_MAX_IMAGES - currentCount
+      const remaining = MAX_REFERENCE_IMAGES - currentCount
       const accepted = Array.from(files).filter((f) => f.type.startsWith('image/'))
       const toAdd = accepted.slice(0, remaining)
       const discarded = accepted.length - toAdd.length
+
+      if (!accepted.length) {
+        useStore.getState().showToast('请选择 JPG、PNG 或 WebP 图片', 'error')
+        return
+      }
 
       for (const file of toAdd) {
         await addImageFromFile(file)
@@ -1118,8 +1123,13 @@ export default function InputBar() {
 
       if (discarded > 0) {
         useStore.getState().showToast(
-          `已达上限 ${API_MAX_IMAGES} 张，${discarded} 张图片被丢弃`,
+          `已添加 ${toAdd.length} 张参考图；最多 ${MAX_REFERENCE_IMAGES} 张，另有 ${discarded} 张未添加`,
           'error',
+        )
+      } else if (toAdd.length > 0) {
+        useStore.getState().showToast(
+          `已添加 ${toAdd.length} 张参考图（最多 ${MAX_REFERENCE_IMAGES} 张），大图会自动优化`,
+          'success',
         )
       }
     } catch (err) {
@@ -1366,7 +1376,15 @@ export default function InputBar() {
         : []
 
       if (imageIds.length > 0) {
-        Promise.all(imageIds.map(async (imageId) => {
+        const currentCount = useStore.getState().inputImages.length
+        const remaining = Math.max(0, MAX_REFERENCE_IMAGES - currentCount)
+        const imageIdsToAdd = imageIds.slice(0, remaining)
+        const discarded = imageIds.length - imageIdsToAdd.length
+        if (!imageIdsToAdd.length) {
+          showToast(`参考图数量已达上限（${MAX_REFERENCE_IMAGES} 张）`, 'error')
+          return
+        }
+        Promise.all(imageIdsToAdd.map(async (imageId) => {
           const dataUrl = await ensureImageCached(imageId)
           if (!dataUrl) {
             showToast('部分图片已不存在', 'error')
@@ -1374,7 +1392,12 @@ export default function InputBar() {
           }
           addInputImage({ id: imageId, dataUrl })
         })).then(() => {
-          showToast('已上传图片', 'success')
+          showToast(
+            discarded > 0
+              ? `已添加 ${imageIdsToAdd.length} 张参考图；最多 ${MAX_REFERENCE_IMAGES} 张，另有 ${discarded} 张未添加`
+              : `已添加 ${imageIdsToAdd.length} 张参考图（最多 ${MAX_REFERENCE_IMAGES} 张）`,
+            discarded > 0 ? 'error' : 'success',
+          )
         }).catch((err) => showToast(`上传图片失败：${err instanceof Error ? err.message : String(err)}`, 'error'))
       }
     }
@@ -1953,7 +1976,7 @@ export default function InputBar() {
 
   return (
     <>
-      <DragUploadOverlay visible={isDragging} atImageLimit={atImageLimit} maxImages={API_MAX_IMAGES} />
+      <DragUploadOverlay visible={isDragging} atImageLimit={atImageLimit} maxImages={MAX_REFERENCE_IMAGES} />
 
       {showSizePicker && (
         <SizePickerModal
@@ -2149,6 +2172,9 @@ export default function InputBar() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                     </svg>
                   </button>
+                  <span className="pointer-events-none absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-gray-700 px-1 text-center text-[10px] font-semibold leading-5 text-white dark:bg-gray-200 dark:text-gray-900">
+                    {inputImages.length}/{MAX_REFERENCE_IMAGES}
+                  </span>
                 </div>
                 <div
                   className="relative"
@@ -2219,6 +2245,9 @@ export default function InputBar() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                     </svg>
                   </button>
+                  <span className="pointer-events-none absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-gray-700 px-1 text-center text-[10px] font-semibold leading-5 text-white dark:bg-gray-200 dark:text-gray-900">
+                    {inputImages.length}/{MAX_REFERENCE_IMAGES}
+                  </span>
 
                   {/* Mobile Upload Menu */}
                   {showMobileUploadMenu && (
@@ -2227,7 +2256,7 @@ export default function InputBar() {
                         className="fixed inset-0 z-40"
                         onClick={() => setShowMobileUploadMenu(false)}
                       />
-                      <div className="absolute bottom-full left-0 mb-2 w-32 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                      <div className="absolute bottom-full left-0 mb-2 w-40 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
                         <button
                           className="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
                           onClick={() => {
@@ -2251,8 +2280,11 @@ export default function InputBar() {
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                           </svg>
-                          上传图片
+                          上传参考图
                         </button>
+                        <div className="border-t border-gray-100 px-3 py-2 text-[11px] leading-4 text-gray-400 dark:border-gray-700 dark:text-gray-500">
+                          最多 {MAX_REFERENCE_IMAGES} 张，大图自动优化
+                        </div>
                       </div>
                     </>
                   )}

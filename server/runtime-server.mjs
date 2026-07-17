@@ -20,8 +20,8 @@ app.use(
     changeOrigin: true,
     secure: true,
     pathRewrite: { '^/api-proxy': '' },
-    proxyTimeout: 600000,
-    timeout: 600000,
+    proxyTimeout: 660000,
+    timeout: 660000,
     ws: false,
   }),
 )

@@ -1,6 +1,7 @@
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { getReferenceRequestTimeoutSeconds } from './referenceImages'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -677,7 +678,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const requestHeaders = createRequestHeaders(profile, opts.requestId)
   const paths = createOpenAICompatiblePaths()
 
-  const { controller, cleanup } = createLinkedAbortController(profile.timeout, opts.signal)
+  const { controller, cleanup } = createLinkedAbortController(
+    getReferenceRequestTimeoutSeconds(profile.timeout, isEdit),
+    opts.signal,
+  )
 
   try {
     let response: Response
@@ -1066,7 +1070,10 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
   const { params, inputImageDataUrls } = opts
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  const { controller, cleanup } = createLinkedAbortController(profile.timeout, opts.signal)
+  const { controller, cleanup } = createLinkedAbortController(
+    getReferenceRequestTimeoutSeconds(profile.timeout, isEdit),
+    opts.signal,
+  )
   let submitTimeoutActive = true
 
   try {
@@ -1157,7 +1164,10 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile, opts.requestId)
-  const { controller, cleanup } = createLinkedAbortController(profile.timeout, opts.signal)
+  const { controller, cleanup } = createLinkedAbortController(
+    getReferenceRequestTimeoutSeconds(profile.timeout, inputImageDataUrls.length > 0),
+    opts.signal,
+  )
 
   try {
     if (opts.maskDataUrl) {

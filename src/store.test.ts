@@ -557,6 +557,22 @@ describe('mask draft lifecycle in store actions', () => {
     expect(state.inputImages.map((img) => img.id)).toEqual([replacement.id, imageB.id])
     expect(state.prompt).toBe(prompt)
   })
+
+  it('does not add more than three uploaded reference images', () => {
+    useStore.setState({ inputImages: [] })
+    for (let index = 1; index <= 4; index += 1) {
+      useStore.getState().addInputImage({
+        id: `reference-${index}`,
+        dataUrl: `data:image/png;base64,${index}`,
+      })
+    }
+
+    expect(useStore.getState().inputImages.map((image) => image.id)).toEqual([
+      'reference-1',
+      'reference-2',
+      'reference-3',
+    ])
+  })
 })
 
 describe('interrupted OpenAI running tasks', () => {

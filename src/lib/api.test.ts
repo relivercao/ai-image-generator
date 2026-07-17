@@ -101,6 +101,50 @@ describe('callImageApi', () => {
     expect(headers.get('X-Request-Id')).toBe('gallery-task-1')
   })
 
+  it('sends three reference images through the multipart edit endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).startsWith('data:image/')) {
+        return new Response(new Blob(['reference'], { type: 'image/png' }))
+      }
+      return new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2U=' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', timeout: 180 },
+      prompt: 'combine the references',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [
+        'data:image/png;base64,aW1hZ2UtMQ==',
+        'data:image/jpeg;base64,aW1hZ2UtMg==',
+        'data:image/webp;base64,aW1hZ2UtMw==',
+      ],
+    })
+
+    const [url, init] = fetchMock.mock.calls.find(([input]) => String(input).includes('/images/edits'))!
+    const body = (init as RequestInit).body as FormData
+    expect(String(url)).toContain('/images/edits')
+    expect(body.getAll('image[]')).toHaveLength(3)
+    expect(body.get('prompt')).toBe('combine the references')
+  })
+
+  it('rejects more than three reference images before sending a request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'too many references',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: Array.from({ length: 4 }, (_, index) => `data:image/png;base64,${index}`),
+    })).rejects.toThrow('参考图最多支持 3 张')
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('parses multiple Responses images packed in one image_generation_call result', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{
