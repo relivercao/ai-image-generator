@@ -111,7 +111,11 @@ describe('callImageApi', () => {
       },
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Oneapi-Request-Id': 'request-embedded-error',
+        'X-Turing-Trace-Id': 'trace-embedded-error',
+      },
     }))
 
     await expect(callImageApi({
@@ -119,7 +123,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    })).rejects.toThrow('请求参数有误，请检查后重试 (code: 400)')
+    })).rejects.toThrow('请求参数有误，请检查后重试 (code: 400) [Request ID: request-embedded-error, Trace ID: trace-embedded-error]')
   })
 
   it('sends three reference images through the multipart edit endpoint', async () => {

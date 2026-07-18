@@ -1,5 +1,7 @@
 import crypto from 'node:crypto'
 import express from 'express'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
 const DEFAULT_JOB_TTL_MS = 60 * 60 * 1000
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 15 * 60 * 1000
@@ -134,14 +136,48 @@ export function createDurableImageProxyRouter(options = {}) {
     DEFAULT_MAX_CACHED_RESULT_BYTES,
   ))
   const fetchImpl = options.fetchImpl || fetch
+  const storageDir = options.storageDir === false
+    ? null
+    : path.resolve(options.storageDir || process.env.DURABLE_PROXY_STORAGE_DIR || path.join(process.cwd(), 'data', 'durable-image-proxy'))
   const jobs = new Map()
   const dedupeJobs = new Map()
   let cachedResultBytes = 0
+
+  const metadataPath = (jobId) => storageDir ? path.join(storageDir, `${jobId}.json`) : null
+  const bodyPath = (jobId) => storageDir ? path.join(storageDir, `${jobId}.body`) : null
+
+  const persistJob = async (job, writeBody = false) => {
+    if (!storageDir) return
+    await fs.mkdir(storageDir, { recursive: true, mode: 0o700 })
+    if (writeBody && job.body) await fs.writeFile(bodyPath(job.id), job.body, { mode: 0o600 })
+    await fs.writeFile(metadataPath(job.id), JSON.stringify({
+      id: job.id,
+      pollToken: job.pollToken,
+      status: job.status,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      dedupeKey: job.dedupeKey,
+      requestFingerprint: job.requestFingerprint,
+      upstreamStatus: job.upstreamStatus,
+      responseHeaders: job.responseHeaders,
+      error: job.error,
+      hasBody: Boolean(job.body),
+    }), { mode: 0o600 })
+  }
+
+  const removePersistedJob = (jobId) => {
+    if (!storageDir) return
+    void Promise.all([
+      fs.rm(metadataPath(jobId), { force: true }),
+      fs.rm(bodyPath(jobId), { force: true }),
+    ]).catch((error) => console.error(`Failed to remove durable image job ${jobId}:`, error))
+  }
 
   const removeJob = (job) => {
     if (!jobs.delete(job.id)) return
     if (job.dedupeKey && dedupeJobs.get(job.dedupeKey) === job.id) dedupeJobs.delete(job.dedupeKey)
     cachedResultBytes = Math.max(0, cachedResultBytes - (job.body?.byteLength || 0))
+    removePersistedJob(job.id)
   }
 
   const cleanupJobs = () => {
@@ -163,6 +199,60 @@ export function createDurableImageProxyRouter(options = {}) {
   const cleanupTimer = setInterval(cleanupJobs, Math.min(jobTtlMs, 60_000))
   cleanupTimer.unref?.()
 
+  const loadPersistedJobs = async () => {
+    if (!storageDir) return
+    await fs.mkdir(storageDir, { recursive: true, mode: 0o700 })
+    const entries = await fs.readdir(storageDir, { withFileTypes: true })
+    const now = Date.now()
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const filePath = path.join(storageDir, entry.name)
+      try {
+        const stored = JSON.parse(await fs.readFile(filePath, 'utf8'))
+        if (!stored.id || !stored.pollToken || !stored.status || !stored.createdAt || !stored.updatedAt) throw new Error('invalid metadata')
+        if (now - Number(stored.updatedAt) >= jobTtlMs) {
+          removePersistedJob(stored.id)
+          continue
+        }
+
+        const job = {
+          id: String(stored.id),
+          pollToken: String(stored.pollToken),
+          status: stored.status === 'processing' ? 'failed' : stored.status,
+          createdAt: Number(stored.createdAt),
+          updatedAt: Number(stored.updatedAt),
+          dedupeKey: stored.dedupeKey || null,
+          requestFingerprint: stored.requestFingerprint || null,
+          requestHeaders: null,
+          requestBody: null,
+          upstreamUrl: null,
+          upstreamStatus: stored.upstreamStatus == null ? null : Number(stored.upstreamStatus),
+          responseHeaders: Array.isArray(stored.responseHeaders) ? stored.responseHeaders : [],
+          body: null,
+          error: stored.status === 'processing'
+            ? '服务端在上游请求完成前发生重启；为避免重复计费，本次任务不会自动重新提交'
+            : stored.error || null,
+        }
+        if (job.status === 'completed' && stored.hasBody) job.body = await fs.readFile(bodyPath(job.id))
+        if (job.status === 'completed' && !job.body) throw new Error('completed result body is missing')
+
+        jobs.set(job.id, job)
+        if (job.dedupeKey) dedupeJobs.set(job.dedupeKey, job.id)
+        cachedResultBytes += job.body?.byteLength || 0
+        if (stored.status === 'processing') await persistJob(job)
+      } catch (error) {
+        console.error(`Ignoring invalid durable image job metadata ${entry.name}:`, error)
+        const jobId = entry.name.slice(0, -'.json'.length)
+        removePersistedJob(jobId)
+      }
+    }
+    cleanupJobs()
+  }
+
+  const ready = loadPersistedJobs().catch((error) => {
+    console.error('Failed to load durable image jobs; continuing with memory-only storage:', error)
+  })
+
   const runUpstreamRequest = async (job) => {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(new Error('Upstream image request timed out')), upstreamTimeoutMs)
@@ -182,11 +272,13 @@ export function createDurableImageProxyRouter(options = {}) {
       job.status = 'completed'
       job.updatedAt = Date.now()
       cachedResultBytes += body.byteLength
+      await persistJob(job, true).catch((error) => console.error(`Failed to persist durable image job ${job.id}:`, error))
       cleanupJobs()
     } catch (error) {
       job.status = 'failed'
       job.error = error instanceof Error ? error.message : String(error)
       job.updatedAt = Date.now()
+      await persistJob(job).catch((persistError) => console.error(`Failed to persist durable image job ${job.id}:`, persistError))
     } finally {
       clearTimeout(timeout)
       job.requestBody = null
@@ -198,7 +290,8 @@ export function createDurableImageProxyRouter(options = {}) {
   const rawBody = express.raw({ type: () => true, limit: maxRequestBytes })
 
   for (const apiPath of ['images/edits', 'images/generations']) {
-    router.post(`/${apiPath}`, rawBody, (req, res) => {
+    router.post(`/${apiPath}`, rawBody, async (req, res) => {
+      await ready
       cleanupJobs()
       const requestBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '')
       const idempotencyKey = String(req.get('idempotency-key') || '').trim()
@@ -241,12 +334,14 @@ export function createDurableImageProxyRouter(options = {}) {
       jobs.set(job.id, job)
       if (dedupeKey) dedupeJobs.set(dedupeKey, job.id)
 
+      await persistJob(job).catch((error) => console.error(`Failed to persist durable image job ${job.id}:`, error))
       void runUpstreamRequest(job)
       res.status(202).json({ ...publicJob(job), pollToken: job.pollToken })
     })
   }
 
-  router.get('/jobs/:jobId', (req, res) => {
+  router.get('/jobs/:jobId', async (req, res) => {
+    await ready
     cleanupJobs()
     const job = jobs.get(req.params.jobId)
     if (!job) {
@@ -261,7 +356,8 @@ export function createDurableImageProxyRouter(options = {}) {
     res.json(publicJob(job))
   })
 
-  router.get('/jobs/:jobId/result', (req, res) => {
+  router.get('/jobs/:jobId/result', async (req, res) => {
+    await ready
     cleanupJobs()
     const job = jobs.get(req.params.jobId)
     if (!job) {
@@ -290,7 +386,9 @@ export function createDurableImageProxyRouter(options = {}) {
     router,
     close() {
       clearInterval(cleanupTimer)
-      for (const job of jobs.values()) removeJob(job)
+      jobs.clear()
+      dedupeJobs.clear()
+      cachedResultBytes = 0
     },
   }
 }

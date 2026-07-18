@@ -123,6 +123,16 @@ function getEmbeddedApiError(payload: unknown): string | null {
     : message
 }
 
+function getResponseDiagnosticSuffix(headers?: Headers): string {
+  if (!headers) return ''
+  const requestId = headers.get('x-oneapi-request-id') || headers.get('x-request-id') || headers.get('request-id')
+  const traceId = headers.get('x-turing-trace-id')
+  return [
+    requestId ? `Request ID: ${requestId}` : '',
+    traceId ? `Trace ID: ${traceId}` : '',
+  ].filter(Boolean).join(', ')
+}
+
 function getNumberValue(source: Record<string, unknown>, key: string): number | undefined {
   const value = source[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -399,10 +409,11 @@ async function parseResponsesImageResults(payload: ResponsesApiResponse, fallbac
   return results
 }
 
-async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal, allowRawImageUrls = false): Promise<CallApiResult> {
+async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal, allowRawImageUrls = false, responseHeaders?: Headers): Promise<CallApiResult> {
   const embeddedError = getEmbeddedApiError(payload)
   if (embeddedError) {
-    const error = new Error(embeddedError)
+    const diagnosticSuffix = getResponseDiagnosticSuffix(responseHeaders)
+    const error = new Error(diagnosticSuffix ? `${embeddedError} [${diagnosticSuffix}]` : embeddedError)
     ;(error as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw error
   }
@@ -825,7 +836,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, opts.allowRawImageUrls)
+    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, opts.allowRawImageUrls, response.headers)
   } finally {
     cleanup()
   }

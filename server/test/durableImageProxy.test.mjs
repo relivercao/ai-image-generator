@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
 import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import express from 'express'
 import { createDurableImageProxyRouter } from '../durable-image-proxy.mjs'
@@ -48,7 +51,7 @@ test('keeps the upstream image request alive and deduplicates browser submission
   const upstreamUrl = await listen(upstreamServer)
 
   const app = express()
-  const durableProxy = createDurableImageProxyRouter({ apiProxyUrl: `${upstreamUrl}/v1`, jobTtlMs: 60_000 })
+  const durableProxy = createDurableImageProxyRouter({ apiProxyUrl: `${upstreamUrl}/v1`, jobTtlMs: 60_000, storageDir: false })
   app.use('/generation-proxy', durableProxy.router)
   const appServer = http.createServer(app)
   const appUrl = await listen(appServer)
@@ -110,6 +113,7 @@ test('reports background transport failures through the polling endpoint', async
   const durableProxy = createDurableImageProxyRouter({
     apiProxyUrl: 'http://127.0.0.1:1/v1',
     fetchImpl: async () => { throw new Error('upstream unavailable') },
+    storageDir: false,
   })
   app.use('/generation-proxy', durableProxy.router)
   const appServer = http.createServer(app)
@@ -132,4 +136,149 @@ test('reports background transport failures through the polling endpoint', async
   )
   assert.equal(failed.status, 'failed')
   assert.match(failed.error, /upstream unavailable/)
+})
+
+test('restores completed jobs after a runtime restart without calling upstream again', async () => {
+  const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'macode-durable-proxy-'))
+  const storageDir = path.join(testRoot, 'jobs')
+  let upstreamCalls = 0
+  const upstreamServer = http.createServer(async (req, res) => {
+    upstreamCalls += 1
+    for await (const _chunk of req) {
+      // Drain request body.
+    }
+    res.setHeader('Content-Type', 'application/json')
+    res.end('{"data":[{"b64_json":"cGVyc2lzdGVk"}]}')
+  })
+  const upstreamUrl = await listen(upstreamServer)
+
+  const startProxy = async () => {
+    const app = express()
+    const proxy = createDurableImageProxyRouter({
+      apiProxyUrl: `${upstreamUrl}/v1`,
+      storageDir,
+      jobTtlMs: 60_000,
+    })
+    app.use('/generation-proxy', proxy.router)
+    const server = http.createServer(app)
+    const url = await listen(server)
+    return { proxy, server, url }
+  }
+
+  const requestInit = {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer persisted-user',
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'persisted-task-1',
+    },
+    body: '{"model":"gpt-image-2","prompt":"persist me"}',
+  }
+
+  let firstRuntime
+  let secondRuntime
+  try {
+    firstRuntime = await startProxy()
+    const firstSubmission = await (await fetch(`${firstRuntime.url}/generation-proxy/images/generations`, requestInit)).json()
+    const completed = await waitForCompleted(
+      `${firstRuntime.url}/generation-proxy/jobs/${firstSubmission.jobId}`,
+      firstSubmission.pollToken,
+    )
+    assert.equal(completed.status, 'completed')
+    await close(firstRuntime.server)
+    firstRuntime.proxy.close()
+    firstRuntime = null
+
+    secondRuntime = await startProxy()
+    const restoredResponse = await fetch(`${secondRuntime.url}/generation-proxy/images/generations`, requestInit)
+    const restoredSubmission = await restoredResponse.json()
+    assert.equal(restoredResponse.status, 200)
+    assert.equal(restoredSubmission.jobId, firstSubmission.jobId)
+    assert.equal(restoredSubmission.status, 'completed')
+    assert.equal(upstreamCalls, 1)
+
+    const resultResponse = await fetch(
+      `${secondRuntime.url}/generation-proxy/jobs/${restoredSubmission.jobId}/result`,
+      { headers: { 'X-Generation-Poll-Token': restoredSubmission.pollToken } },
+    )
+    assert.deepEqual(await resultResponse.json(), { data: [{ b64_json: 'cGVyc2lzdGVk' }] })
+  } finally {
+    if (firstRuntime) {
+      await close(firstRuntime.server)
+      firstRuntime.proxy.close()
+    }
+    if (secondRuntime) {
+      await close(secondRuntime.server)
+      secondRuntime.proxy.close()
+    }
+    await close(upstreamServer)
+    await fs.rm(testRoot, { recursive: true, force: true })
+  }
+})
+
+test('does not resubmit an interrupted in-flight job after restart', async () => {
+  const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'macode-durable-interrupted-'))
+  const storageDir = path.join(testRoot, 'jobs')
+  let upstreamCalls = 0
+
+  const startProxy = async (fetchImpl) => {
+    const app = express()
+    const proxy = createDurableImageProxyRouter({
+      apiProxyUrl: 'https://upstream.example/v1',
+      fetchImpl,
+      storageDir,
+      jobTtlMs: 60_000,
+    })
+    app.use('/generation-proxy', proxy.router)
+    const server = http.createServer(app)
+    const url = await listen(server)
+    return { proxy, server, url }
+  }
+
+  const requestInit = {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer interrupted-user',
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'interrupted-task-1',
+    },
+    body: '{"model":"gpt-image-2","prompt":"do not bill twice"}',
+  }
+
+  let firstRuntime
+  let secondRuntime
+  try {
+    firstRuntime = await startProxy(async () => {
+      upstreamCalls += 1
+      return new Promise(() => {})
+    })
+    const firstSubmission = await (await fetch(`${firstRuntime.url}/generation-proxy/images/generations`, requestInit)).json()
+    assert.equal(firstSubmission.status, 'processing')
+    await close(firstRuntime.server)
+    firstRuntime.proxy.close()
+    firstRuntime = null
+
+    secondRuntime = await startProxy(async () => {
+      upstreamCalls += 1
+      throw new Error('interrupted job must not be submitted again')
+    })
+    const restoredSubmission = await (await fetch(
+      `${secondRuntime.url}/generation-proxy/images/generations`,
+      requestInit,
+    )).json()
+    assert.equal(restoredSubmission.jobId, firstSubmission.jobId)
+    assert.equal(restoredSubmission.status, 'failed')
+    assert.match(restoredSubmission.error, /不会自动重新提交/)
+    assert.equal(upstreamCalls, 1)
+  } finally {
+    if (firstRuntime) {
+      await close(firstRuntime.server)
+      firstRuntime.proxy.close()
+    }
+    if (secondRuntime) {
+      await close(secondRuntime.server)
+      secondRuntime.proxy.close()
+    }
+    await fs.rm(testRoot, { recursive: true, force: true })
+  }
 })
