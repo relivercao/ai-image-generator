@@ -21,7 +21,7 @@ function parseSqlDsn(dsn) {
   }
 }
 
-function createMysqlPool() {
+export function createMysqlPool() {
   const dsnConfig = parseSqlDsn(process.env.SQL_DSN)
   return mysql.createPool({
     host: process.env.DB_HOST || dsnConfig?.host || '127.0.0.1',
@@ -61,7 +61,7 @@ function allSqlite(db, sql, params = []) {
   })
 }
 
-function createSqlitePool(filename) {
+export function createSqlitePool(filename) {
   const db = new sqlite3.Database(filename)
 
   return {

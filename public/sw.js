@@ -1,4 +1,4 @@
-const CACHE_NAME = 'macode-image-v0.6.10-proxy-fix-1'
+const CACHE_NAME = 'macode-image-v0.6.10-durable-proxy-1'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
@@ -34,7 +34,9 @@ self.addEventListener('fetch', (event) => {
     relativePath === 'api' ||
     relativePath.startsWith('api/') ||
     relativePath === 'api-proxy' ||
-    relativePath.startsWith('api-proxy/')
+    relativePath.startsWith('api-proxy/') ||
+    relativePath === 'generation-proxy' ||
+    relativePath.startsWith('generation-proxy/')
   ) return
 
   if (request.mode === 'navigate') {

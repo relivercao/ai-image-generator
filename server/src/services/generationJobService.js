@@ -3,7 +3,7 @@ import dns from 'node:dns/promises'
 import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
-import pool from '../config/database.js'
+import pool from '../config/generationDatabase.js'
 
 const MAX_IMAGE_BYTES = Number(process.env.GENERATED_IMAGE_MAX_BYTES || 30 * 1024 * 1024)
 const DOWNLOAD_TIMEOUT_MS = Number(process.env.GENERATED_IMAGE_DOWNLOAD_TIMEOUT_MS || 120_000)

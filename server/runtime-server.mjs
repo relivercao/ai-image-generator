@@ -2,6 +2,7 @@ import express from 'express'
 import { createProxyMiddleware } from 'http-proxy-middleware'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createDurableImageProxyRouter } from './durable-image-proxy.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..', 'dist')
@@ -12,6 +13,9 @@ const apiProxyUrl = process.env.API_PROXY_URL || 'https://www.macode.cloud/v1'
 const authApiUrl = process.env.AUTH_API_URL || 'http://127.0.0.1:3004'
 
 app.disable('x-powered-by')
+
+const durableImageProxy = createDurableImageProxyRouter({ apiProxyUrl })
+app.use('/generation-proxy', durableImageProxy.router)
 
 app.use(
   '/api-proxy',

@@ -12,6 +12,7 @@ interface ImportMetaEnv {
   readonly VITE_AUTH_DEV_PROXY?: string
   readonly VITE_API_PROXY_AVAILABLE?: string
   readonly VITE_API_PROXY_LOCKED?: string
+  readonly VITE_DURABLE_IMAGE_PROXY?: string
   readonly VITE_DOCKER_DEPLOYMENT?: string
   readonly VITE_DOCKER_LEGACY_API_URL_USED?: string
   readonly VITE_SHOW_DEFAULT_CONFIG_ONLY?: string

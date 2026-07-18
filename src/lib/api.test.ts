@@ -101,6 +101,27 @@ describe('callImageApi', () => {
     expect(headers.get('X-Request-Id')).toBe('gallery-task-1')
   })
 
+  it('surfaces an API error embedded in an HTTP 200 image response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      created: 1784374645,
+      error: {
+        message: '请求参数有误，请检查后重试',
+        type: 'service_error',
+        code: '400',
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('请求参数有误，请检查后重试 (code: 400)')
+  })
+
   it('sends three reference images through the multipart edit endpoint', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       if (String(input).startsWith('data:image/')) {

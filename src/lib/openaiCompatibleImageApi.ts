@@ -1,6 +1,7 @@
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { fetchThroughDurableImageProxy, isDurableImageProxyEnabled } from './durableImageProxy'
 import { getReferenceRequestTimeoutSeconds } from './referenceImages'
 import {
   assertImageInputPayloadSize,
@@ -106,6 +107,20 @@ function getStringValue(source: Record<string, unknown>, key: string): string | 
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function getEmbeddedApiError(payload: unknown): string | null {
+  if (!isRecordValue(payload)) return null
+  const error = payload.error
+  if (typeof error === 'string' && error.trim()) return error.trim()
+  if (!isRecordValue(error)) return null
+
+  const message = getStringValue(error, 'message') ?? getStringValue(error, 'type')
+  if (!message) return null
+  const code = error.code
+  return typeof code === 'string' || typeof code === 'number'
+    ? `${message} (code: ${code})`
+    : message
 }
 
 function getNumberValue(source: Record<string, unknown>, key: string): number | undefined {
@@ -385,6 +400,13 @@ async function parseResponsesImageResults(payload: ResponsesApiResponse, fallbac
 }
 
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal, allowRawImageUrls = false): Promise<CallApiResult> {
+  const embeddedError = getEmbeddedApiError(payload)
+  if (embeddedError) {
+    const error = new Error(embeddedError)
+    ;(error as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw error
+  }
+
   const data = payload.data
   const actualParams = mergeActualParams(
     pickActualParams(payload),
@@ -740,13 +762,17 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         formData.append('mask', maskBlob, 'mask.png')
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
+      const requestUrl = buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy)
+      const requestInit: RequestInit = {
         method: 'POST',
         headers: requestHeaders,
         cache: 'no-store',
         body: formData,
         signal: controller.signal,
-      })
+      }
+      response = useApiProxy && isDurableImageProxyEnabled()
+        ? await fetchThroughDurableImageProxy(requestUrl, requestInit)
+        : await fetch(requestUrl, requestInit)
     } else {
       const body: Record<string, unknown> = {
         model: profile.model,
@@ -774,7 +800,8 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         body.partial_images = getStreamPartialImages(profile)
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
+      const requestUrl = buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy)
+      const requestInit: RequestInit = {
         method: 'POST',
         headers: {
           ...requestHeaders,
@@ -783,7 +810,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         cache: 'no-store',
         body: JSON.stringify(body),
         signal: controller.signal,
-      })
+      }
+      response = useApiProxy && isDurableImageProxyEnabled()
+        ? await fetchThroughDurableImageProxy(requestUrl, requestInit)
+        : await fetch(requestUrl, requestInit)
     }
 
     if (!response.ok) {
