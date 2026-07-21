@@ -138,6 +138,58 @@ test('reports background transport failures through the polling endpoint', async
   assert.match(failed.error, /upstream unavailable/)
 })
 
+test('persists a redacted multipart request summary', async (t) => {
+  const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'macode-durable-summary-'))
+  const storageDir = path.join(testRoot, 'jobs')
+  const app = express()
+  const durableProxy = createDurableImageProxyRouter({
+    apiProxyUrl: 'https://upstream.example/v1',
+    storageDir,
+    fetchImpl: async () => new Response('{"error":{"message":"invalid","type":"service_error","code":"400"}}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  })
+  app.use('/generation-proxy', durableProxy.router)
+  const appServer = http.createServer(app)
+  const appUrl = await listen(appServer)
+
+  t.after(async () => {
+    durableProxy.close()
+    await close(appServer)
+    await fs.rm(testRoot, { recursive: true, force: true })
+  })
+
+  const formData = new FormData()
+  formData.append('model', 'gpt-image-2')
+  formData.append('prompt', 'private prompt text')
+  formData.append('size', '1440x2560')
+  formData.append('quality', 'standard')
+  formData.append('image[]', new Blob(['first-image'], { type: 'image/jpeg' }), 'private-first.jpg')
+  formData.append('image[]', new Blob(['second-image'], { type: 'image/png' }), 'private-second.png')
+
+  const submissionResponse = await fetch(`${appUrl}/generation-proxy/images/edits`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': 'summary-task' },
+    body: formData,
+  })
+  const submission = await submissionResponse.json()
+  await waitForCompleted(`${appUrl}/generation-proxy/jobs/${submission.jobId}`, submission.pollToken)
+
+  const metadataText = await fs.readFile(path.join(storageDir, `${submission.jobId}.json`), 'utf8')
+  const metadata = JSON.parse(metadataText)
+  assert.deepEqual(metadata.requestSummary.fields, {
+    model: 'gpt-image-2',
+    size: '1440x2560',
+    quality: 'standard',
+  })
+  assert.equal(metadata.requestSummary.promptChars, 'private prompt text'.length)
+  assert.equal(metadata.requestSummary.imageCount, 2)
+  assert.equal(metadata.requestSummary.files[0].type, 'image/jpeg')
+  assert.equal(metadata.requestSummary.files[1].type, 'image/png')
+  assert.doesNotMatch(metadataText, /private prompt text|private-first|private-second/)
+})
+
 test('restores completed jobs after a runtime restart without calling upstream again', async () => {
   const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'macode-durable-proxy-'))
   const storageDir = path.join(testRoot, 'jobs')

@@ -65,10 +65,13 @@ import { blobToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
 import {
+  createReferenceImageSheetDataUrl,
   getReferenceRequestTimeoutSeconds,
+  MACODE_REFERENCE_SHEET_PROMPT,
   MAX_REFERENCE_IMAGES,
   optimizeReferenceImageDataUrl,
   prepareReferenceImageFile,
+  shouldComposeMacodeReferenceImages,
 } from './lib/referenceImages'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
@@ -4739,11 +4742,18 @@ async function executeTask(taskId: string) {
       ? task.transparentPrompt
       : task.prompt
 
+    let apiInputDataUrls = inputDataUrls
+    let apiPrompt = replaceImageMentionsForApi(requestPrompt, inputDataUrls.length)
+    if (!maskDataUrl && shouldComposeMacodeReferenceImages(activeProfile, inputDataUrls.length)) {
+      apiInputDataUrls = [await createReferenceImageSheetDataUrl(inputDataUrls)]
+      apiPrompt = `${apiPrompt}\n\n${MACODE_REFERENCE_SHEET_PROMPT}`
+    }
+
     const result = await callGalleryImageApiWithRetry(taskId, {
       settings: requestSettings,
-      prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
+      prompt: apiPrompt,
       params: task.params,
-      inputImageDataUrls: inputDataUrls,
+      inputImageDataUrls: apiInputDataUrls,
       maskDataUrl,
       requestId: task.serverJobId || task.id,
       allowRawImageUrls: true,

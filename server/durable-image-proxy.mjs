@@ -47,6 +47,86 @@ function createRequestFingerprint(contentType, requestBody) {
     .digest('hex')
 }
 
+const REQUEST_SUMMARY_FIELDS = [
+  'model',
+  'size',
+  'quality',
+  'output_format',
+  'moderation',
+  'n',
+  'response_format',
+  'stream',
+  'partial_images',
+]
+
+function compactScalar(value, maxLength = 120) {
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return undefined
+  const normalized = String(value)
+  return normalized ? normalized.slice(0, maxLength) : undefined
+}
+
+async function createRequestSummary(apiPath, contentType, requestBody) {
+  const summary = {
+    apiPath,
+    requestBytes: requestBody.byteLength,
+    contentType: contentType.split(';', 1)[0].trim().toLowerCase() || 'unknown',
+  }
+
+  try {
+    if (/^multipart\/form-data\b/i.test(contentType)) {
+      const request = new Request('http://durable-proxy.local/request', {
+        method: 'POST',
+        headers: { 'Content-Type': contentType },
+        body: requestBody,
+      })
+      const formData = await request.formData()
+      const fields = {}
+      for (const name of REQUEST_SUMMARY_FIELDS) {
+        fields[name] = compactScalar(formData.get(name))
+      }
+      const prompt = formData.get('prompt')
+      const files = []
+      for (const [field, value] of formData.entries()) {
+        if (typeof value === 'string') continue
+        files.push({
+          field: field.slice(0, 40),
+          type: compactScalar(value.type, 80) || 'application/octet-stream',
+          bytes: value.size,
+        })
+      }
+      return {
+        ...summary,
+        fields,
+        promptChars: typeof prompt === 'string' ? prompt.length : 0,
+        imageCount: files.filter((file) => file.field === 'image' || file.field.startsWith('image[')).length,
+        maskCount: files.filter((file) => file.field === 'mask').length,
+        files,
+      }
+    }
+
+    if (/^application\/json\b/i.test(contentType)) {
+      const payload = JSON.parse(requestBody.toString('utf8'))
+      const fields = {}
+      for (const name of REQUEST_SUMMARY_FIELDS) fields[name] = compactScalar(payload?.[name])
+      return {
+        ...summary,
+        fields,
+        promptChars: typeof payload?.prompt === 'string' ? payload.prompt.length : 0,
+        imageCount: 0,
+        maskCount: 0,
+        files: [],
+      }
+    }
+  } catch (error) {
+    return {
+      ...summary,
+      parseError: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    }
+  }
+
+  return summary
+}
+
 function buildUpstreamUrl(apiProxyUrl, apiPath, originalUrl) {
   const baseUrl = new URL(apiProxyUrl.endsWith('/') ? apiProxyUrl : `${apiProxyUrl}/`)
   const target = new URL(apiPath.replace(/^\/+/, ''), baseUrl)
@@ -158,6 +238,7 @@ export function createDurableImageProxyRouter(options = {}) {
       updatedAt: job.updatedAt,
       dedupeKey: job.dedupeKey,
       requestFingerprint: job.requestFingerprint,
+      requestSummary: job.requestSummary,
       upstreamStatus: job.upstreamStatus,
       responseHeaders: job.responseHeaders,
       error: job.error,
@@ -223,6 +304,7 @@ export function createDurableImageProxyRouter(options = {}) {
           updatedAt: Number(stored.updatedAt),
           dedupeKey: stored.dedupeKey || null,
           requestFingerprint: stored.requestFingerprint || null,
+          requestSummary: stored.requestSummary || null,
           requestHeaders: null,
           requestBody: null,
           upstreamUrl: null,
@@ -269,10 +351,11 @@ export function createDurableImageProxyRouter(options = {}) {
       job.upstreamStatus = response.status
       job.responseHeaders = copyResponseHeaders(response.headers)
       job.body = body
-      job.status = 'completed'
       job.updatedAt = Date.now()
       cachedResultBytes += body.byteLength
-      await persistJob(job, true).catch((error) => console.error(`Failed to persist durable image job ${job.id}:`, error))
+      await persistJob({ ...job, status: 'completed' }, true)
+        .catch((error) => console.error(`Failed to persist durable image job ${job.id}:`, error))
+      job.status = 'completed'
       cleanupJobs()
     } catch (error) {
       job.status = 'failed'
@@ -298,6 +381,7 @@ export function createDurableImageProxyRouter(options = {}) {
       const authorizationHash = sha256(String(req.get('authorization') || ''))
       const dedupeKey = idempotencyKey ? sha256(`${authorizationHash}\0${apiPath}\0${idempotencyKey}`) : null
       const requestFingerprint = createRequestFingerprint(req.get('content-type') || '', requestBody)
+      const requestSummary = await createRequestSummary(apiPath, req.get('content-type') || '', requestBody)
 
       if (dedupeKey) {
         const existingJob = jobs.get(dedupeJobs.get(dedupeKey))
@@ -323,6 +407,7 @@ export function createDurableImageProxyRouter(options = {}) {
         updatedAt: now,
         dedupeKey,
         requestFingerprint,
+        requestSummary,
         requestHeaders: copyRequestHeaders(req.headers),
         requestBody: Buffer.from(requestBody),
         upstreamUrl: buildUpstreamUrl(apiProxyUrl, apiPath, req.originalUrl),
