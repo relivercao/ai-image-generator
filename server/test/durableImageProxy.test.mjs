@@ -184,6 +184,7 @@ test('persists a redacted multipart request summary', async (t) => {
     quality: 'standard',
   })
   assert.equal(metadata.requestSummary.promptChars, 'private prompt text'.length)
+  assert.equal(metadata.requestSummary.promptUtf8Bytes, Buffer.byteLength('private prompt text', 'utf8'))
   assert.equal(metadata.requestSummary.imageCount, 2)
   assert.equal(metadata.requestSummary.files[0].type, 'image/jpeg')
   assert.equal(metadata.requestSummary.files[1].type, 'image/png')

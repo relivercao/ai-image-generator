@@ -79,6 +79,30 @@ describe('callImageApi', () => {
     expect(body.prompt).toBe('prompt')
   })
 
+  it('keeps the beginning and ending constraints when an Images API prompt is too long', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const prompt = `开头主题-${'中'.repeat(9000)}-末尾硬约束`
+
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt,
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(Array.from(body.prompt)).toHaveLength(8000)
+    expect(body.prompt).toMatch(/^开头主题-/)
+    expect(body.prompt).toContain('中间内容因图像接口长度限制已省略')
+    expect(body.prompt).toMatch(/-末尾硬约束$/)
+  })
+
   it('sends a stable idempotency key for generation retries', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],

@@ -64,6 +64,7 @@ import { AUTH_TOKEN_STORAGE_KEY, requestMacodeAuth } from './lib/authApi'
 import { blobToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
+import { constrainImagePrompt } from './lib/imagePrompt'
 import {
   createReferenceImageSheetDataUrl,
   getReferenceRequestTimeoutSeconds,
@@ -4747,6 +4748,14 @@ async function executeTask(taskId: string) {
     if (!maskDataUrl && shouldComposeMacodeReferenceImages(activeProfile, inputDataUrls.length)) {
       apiInputDataUrls = [await createReferenceImageSheetDataUrl(inputDataUrls)]
       apiPrompt = `${apiPrompt}\n\n${MACODE_REFERENCE_SHEET_PROMPT}`
+    }
+    const constrainedPrompt = constrainImagePrompt(apiPrompt)
+    if (constrainedPrompt.truncated) {
+      useStore.getState().showToast(
+        `提示词过长（${constrainedPrompt.originalCharacters.toLocaleString()} 字），已精简为 ${constrainedPrompt.finalCharacters.toLocaleString()} 字后提交`,
+        'info',
+      )
+      apiPrompt = constrainedPrompt.prompt
     }
 
     const result = await callGalleryImageApiWithRetry(taskId, {

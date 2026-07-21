@@ -2,6 +2,7 @@ import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefi
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { fetchThroughDurableImageProxy, isDurableImageProxyEnabled } from './durableImageProxy'
+import { constrainImagePrompt } from './imagePrompt'
 import { getReferenceRequestTimeoutSeconds } from './referenceImages'
 import {
   assertImageInputPayloadSize,
@@ -701,9 +702,10 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
 
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
-  const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
+  const guardedPrompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${originalPrompt}`
     : originalPrompt
+  const prompt = constrainImagePrompt(guardedPrompt).prompt
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
